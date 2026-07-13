@@ -17,6 +17,10 @@ include("terminal.jl")
 include("tails.jl")
 include("parade.jl")
 include("api.jl")
+include("cov.jl")
+include("periodicity.jl")
+include("spec.jl")
+include("search.jl")
 
 export Dist, SplicedDist, dist_gaussian, dist_combine, dist_mean, dist_var, dist_std,
     dist_logpdf, dist_cdf, dist_crps, dist_quantile, dist_pdf, dist_prune,
@@ -27,6 +31,11 @@ export Dist, SplicedDist, dist_gaussian, dist_combine, dist_mean, dist_var, dist
     theta, drift, holt_linear, garch, seasonal_difference, power_transform,
     ar, grouped_ar, yeo_johnson,
     precision_weighted_ensemble, bayesian_ensemble, multiscale, sticky,
-    terminal_leaf_ensemble, gpdtails, parade, laplace
+    terminal_leaf_ensemble, gpdtails, parade, laplace,
+    running_cov, ema_cov, ledoit_wolf_cov,
+    period_detector, top_periods,
+    spec_build, spec_name, leaf_spec, ema_spec, ensemble_spec, conjugate_spec,
+    diff_spec, frac_spec, std_spec, ema_t_spec,
+    adaptive_search
 
 end # module

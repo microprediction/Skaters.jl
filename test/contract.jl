@@ -139,6 +139,22 @@ for k in (1, 3)
     println("ok   checkpoint-resume k=$k (save at 600/1200)")
 end
 
+# Adaptive search: its state holds only recipes and plain data (the Python
+# reference keeps live callables in the state; this port rebuilds them from
+# recipes), so it must satisfy the same resume contract, across an
+# expansion boundary (expand at 100 and 200 with the save at 150).
+let
+    ys = make_series(300, 13)
+    full_probes, full_state = run_probed(adaptive_search(k = 1), ys)
+    first_probes, first_state = run_probed(adaptive_search(k = 1), ys[1:150])
+    restored = roundtrip(first_state)
+    resumed_probes, resumed_state = run_probed(adaptive_search(k = 1), ys; st = restored, from = 151)
+    check(bits_equal(resumed_probes, full_probes[151:300]),
+        "search resume: probes differ from uninterrupted run")
+    check(deepeq(resumed_state, full_state), "search resume: final states differ")
+    println("ok   checkpoint-resume adaptive_search (save at 150/300)")
+end
+
 # The splice must actually be active in the resumed run at k=1, otherwise
 # the checkpoint test is not exercising the tail state.
 let

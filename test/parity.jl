@@ -19,7 +19,7 @@ probe(d) = (dist_mean(d), dist_std(d), dist_logpdf(d, PROBE), dist_cdf(d, PROBE)
 parseexp(x::AbstractString) = x == "nan" ? NaN : x == "inf" ? Inf : x == "-inf" ? -Inf : parse(Float64, x)
 parseexp(x) = Float64(x)
 
-# --- scenario registry (mirrors parity/gen_vectors.py, minus search/spec/cov) ---
+# --- scenario registry (mirrors parity/gen_vectors.py) ---
 scenarios = Tuple{String,Int,Any}[]
 for k in (1, 3)
     suf = k == 1 ? "" : "_k$k"
@@ -54,6 +54,11 @@ push!(scenarios, ("garch_leaf", 1, garch_leaf(1)))
 push!(scenarios, ("scalemix_ema", 1, conjugate(scale_mixture_leaf(1), ema_transform(0.1), 1)))
 push!(scenarios, ("gpd_tails", 1, gpdtails(conjugate(leaf(1), ema_transform(0.1), 1), 1;
     level = 0.9, nexc = 50, warmup = 100)))
+push!(scenarios, ("search_default", 1, adaptive_search(k = 1, expand_interval = 50)))
+push!(scenarios, ("spec_diff_ensemble", 1, spec_build(
+    conjugate_spec(ensemble_spec(ema_spec(0.01, 1), ema_spec(0.1, 1); k = 1),
+        diff_spec()))))
+push!(scenarios, ("spec_ema", 1, spec_build(ema_spec(0.05, 1))))
 push!(scenarios, ("pol_laplace", 1, laplace(k = 1)))
 push!(scenarios, ("pol_laplace_k3", 3, laplace(k = 3)))
 
@@ -99,6 +104,70 @@ repeat_scenarios = Tuple{String,Int,Any}[
     ("sticky_ema", 1, sticky(conjugate(leaf(1), ema_transform(0.1), 1); k = 1)),
 ]
 check_block(repeat_scenarios, repeat_series, v["repeat_scenarios"])
+
+# Periodicity detector: ranked (lag, acf) per step on the main series.
+let
+    global fails, checked
+    pd = period_detector()
+    st = nothing
+    row = 0
+    for i in eachindex(series)
+        scores, st = pd(series[i], st)
+        if i - 1 >= BURN
+            row += 1
+            expected = v["periodicity"][row]
+            checked += 1
+            if length(scores) != length(expected)
+                fails += 1
+                fails < 8 && println("FAIL periodicity row $row: $(length(scores)) scores, want $(length(expected))")
+                continue
+            end
+            for j in eachindex(expected)
+                lag_want = Int(expected[j][1])
+                acf_want = parseexp(expected[j][2])
+                lag_got, acf_got = scores[j]
+                checked += 2
+                if lag_got != lag_want
+                    fails += 1
+                    fails < 8 && println("FAIL periodicity row $row rank $j: lag $lag_got want $lag_want")
+                end
+                if !isnan(acf_want) && abs(acf_got - acf_want) > ATOL + RTOL * abs(acf_want)
+                    fails += 1
+                    fails < 8 && println("FAIL periodicity row $row rank $j: acf $acf_got want $acf_want")
+                end
+            end
+        end
+    end
+    println("ok   periodicity")
+end
+
+# Covariance estimators on the fixed multivariate series.
+let
+    global fails, checked
+    vec_series = [Float64.(x) for x in v["vec_series"]]
+    for (nm, fn) in (("running", running_cov), ("ema", ema_cov), ("ledoit", ledoit_wolf_cov))
+        expected = v["cov"][nm]
+        st = nothing
+        row = 0
+        for i in eachindex(vec_series)
+            mean, cov, st = fn(vec_series[i], st)
+            if i - 1 >= BURN
+                row += 1
+                got = vcat(mean, cov)
+                exp_ = [parseexp(x) for x in vcat(expected[row][1], expected[row][2])]
+                for j in eachindex(got)
+                    checked += 1
+                    isnan(exp_[j]) && continue
+                    if abs(got[j] - exp_[j]) > ATOL + RTOL * abs(exp_[j])
+                        fails += 1
+                        fails < 8 && println("FAIL cov $nm row $row probe $j: got $(got[j]) want $(exp_[j])")
+                    end
+                end
+            end
+        end
+        println("ok   cov_$nm")
+    end
+end
 
 println("$checked values checked")
 if fails > 0
