@@ -19,7 +19,31 @@ active. It parses the vectors with JSON.jl and compares the seven probes
 (mean, std, logpdf@0.3, cdf@0.3, quantile@0.1, quantile@0.9, crps@0.3) for
 every post-burn-in step and horizon of every scenario.
 
-Current status: 52 scenarios, 96040 probe values, PARITY OK.
+Current status: 56 scenarios plus the periodicity and covariance blocks,
+105798 probe values, PARITY OK. This is the same value count the R port
+reached, i.e. full library coverage.
+
+## The other two gates
+
+Beyond parity, two more suites run (all three together via `Pkg.test()`
+or `julia --project=. test/runtests.jl`):
+
+- `test/robustness.jl`: adversarial streams through `laplace(1)`:
+  constant series, lattice/repeats, a 1e9 monster spike with a
+  post-recovery alarm-rate assertion (< 6% at a ~1e-2 two-sided
+  threshold), an extreme finite 1e300 tick, scale collapse and recovery,
+  vol whiplash on a trend, and a 3000-tick soak that must activate the
+  GPD splice. Well-formedness is asserted at checkpoints: logpdf not NaN,
+  cdf in [0,1] and monotone over probes, five ordered finite quantiles.
+  The RNG is a deterministic UInt32 LCG plus Box-Muller, the same
+  generator as the JS gate; Julia's default RNG is never used.
+- `test/contract.jl`: bitwise determinism (two independently built
+  skaters, probe streams compared through `reinterpret(UInt64, x)`) and
+  checkpoint-resume equivalence (state serialized mid-stream with
+  `Serialization`, resumed by a freshly built skater; the resumed probe
+  stream must match the uninterrupted run bit for bit). Also covered for
+  `adaptive_search` across an expansion boundary, which is why its state
+  holds recipes and plain data only.
 
 ## Status map
 
@@ -39,10 +63,22 @@ Current status: 52 scenarios, 96040 probe values, PARITY OK.
 | tails (Acklam phi_inv, censored-ML GPD, SplicedDist) | tails.py | DONE |
 | parade (PIT/z state) | parade.py | DONE |
 | laplace (the composition) | api.py | DONE |
-| adaptive search (dantzig) | search.py | out of scope |
-| spec build path | spec.py | out of scope |
-| periodicity detector | periodicity.py | out of scope |
-| covariance estimators | cov/ | out of scope |
+| adaptive search (recipes-only state) | search.py | DONE |
+| spec build path | spec.py | DONE |
+| periodicity detector | periodicity.py | DONE |
+| covariance estimators (running, ema, ledoit_wolf) | cov/ | DONE |
+
+The adaptive search carries one deliberate departure, shared with the R
+port: the Python reference stores live skater callables in the state,
+while this port stores only recipes and plain data, rebuilding candidate
+skaters on demand through a per-instance memo. Rebuilding is
+deterministic, so values match the reference exactly (the
+`search_default` parity scenario) and the state survives `Serialization`
+round-trips (the resume contract). Two Python orderings are semantic and
+preserved: expansion ranks `(score, index)` tuples in reverse (score
+descending, then index descending) and pruning removes the first argmin;
+the scoring loss is logpdf clamped to [-20, 20], with the lower clamp
+also catching NaN.
 
 ## Two traps carried over from the R and Rust ports
 
@@ -69,7 +105,12 @@ ported verbatim from tails.py, including the single Halley polish step.
 State is plain nested `Dict{String,Any}` (and plain vectors) so it stays
 trivially serializable. `Dist` is an immutable struct of `(w, m, s)`
 tuples; `SplicedDist` is a small mutable struct that memoizes its quantile
-grid, and it is only ever an output, never part of returned state.
+grid. One caveat found while writing the contract suite: `SplicedDist`
+does reach state after the tail warm-up, because `parade` buffers the
+dists it returned (its `pending` list). That is fine for `Serialization`
+(the struct round-trips exactly), but any structural state comparison
+must compare it field by field rather than by identity; the contract
+suite's `deepeq` does exactly that.
 
 ## Refresh ritual
 
@@ -84,6 +125,10 @@ This port is faithful to skaters as of the pinned commit. To refresh:
 
 `parity/vectors.json` is copied from the reference worktree at commit
 `632831e510d662d752d3207258e23a6c51db59a5` (its `parity/vectors.json`).
+The robustness and contract suites mirror the R port
+(`skaters-r/tests/robustness.R`, `tests/contract.R`) and the Rust crate
+(`rust/tests/robustness.rs`), which in turn mirror the reference repo's
+`parity/adversarial.mjs` and `tests/test_tails_robustness.py`.
 
 ## Throughput
 
