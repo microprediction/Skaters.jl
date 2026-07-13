@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "410efd86bc48f842197bcec278693b6ff9fbb2a3"
+project_hash = "ddc6fd4276a36db4a72f404de04a11903295fd1f"
 
 [[deps.Dates]]
 deps = ["Printf"]
@@ -51,8 +51,12 @@ version = "1.11.0"
 uuid = "ea8e919c-243c-51af-8825-aaa63cd721ce"
 version = "0.7.0"
 
+[[deps.Serialization]]
+uuid = "9e88b42a-f829-5b0c-bbe9-9e923198166b"
+version = "1.11.0"
+
 [[deps.Skaters]]
-deps = ["JSON"]
+deps = ["JSON", "Serialization"]
 path = "."
 uuid = "c649c80f-181f-440e-9a6d-97a2f794b407"
 version = "0.1.0"
