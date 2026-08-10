@@ -71,6 +71,10 @@ function check_block(scenarios, series, expected_block)
         expected = expected_block[name]["out"]
         st = nothing
         row = 0
+        # Per-scenario tally. Without it the summary below printed "ok" for
+        # EVERY scenario, failing or not, so a drifted port looked clean apart
+        # from whichever scenario consumed the global 7-line print budget.
+        sc_fails = 0
         for i in eachindex(series)
             dists, st = sk(series[i], st)
             if i - 1 >= BURN
@@ -84,7 +88,10 @@ function check_block(scenarios, series, expected_block)
                         isnan(e) && continue
                         if abs(got[j] - e) > ATOL + RTOL * abs(e)
                             fails += 1
-                            if fails < 8
+                            sc_fails += 1
+                            # Budget per SCENARIO, so every drifted scenario
+                            # shows evidence, not only the first one.
+                            if sc_fails <= 3
                                 println("FAIL $name row $row h $h probe $j: got $(got[j]) want $e")
                             end
                         end
@@ -92,7 +99,11 @@ function check_block(scenarios, series, expected_block)
                 end
             end
         end
-        println("ok   $name")
+        if sc_fails > 0
+            println("FAIL $name  $sc_fails mismatches")
+        else
+            println("ok   $name")
+        end
     end
 end
 
@@ -166,6 +177,34 @@ let
             end
         end
         println("ok   cov_$nm")
+    end
+end
+
+# --- structure: the candidate population, not its numbers ---
+# Numeric probes cannot see a missing candidate. This port ran 57 candidates
+# against the reference's 60 (no seasonal_anchor) while every individual
+# transform matched to 1e-6; only the composed laplace drifted. Count and depth
+# vector catch that in one line, and catch a candidate added in the wrong
+# position too, since the ensemble aligns depths by index.
+if haskey(v, "structure")
+    for (kname, want) in v["structure"]
+        global fails
+        kk = parse(Int, kname)
+        cands, depths = Skaters._build_candidates(kk)   # internal, not exported
+        want_n = Int(want["n_candidates"])
+        want_d = Float64[Float64(x) for x in want["depths"]]
+        ok = true
+        if length(cands) != want_n
+            fails += 1
+            ok = false
+            println("FAIL structure k=$kk: $(length(cands)) candidates, want $want_n")
+        end
+        if depths != want_d
+            fails += 1
+            ok = false
+            println("FAIL structure k=$kk: depth vector differs")
+        end
+        ok && println("ok   structure k=$kk   $(length(cands)) candidates")
     end
 end
 

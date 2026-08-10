@@ -87,11 +87,23 @@ function standardize(alpha::Float64 = 0.05, eps::Float64 = 1e-8)
         mu = state["mu"]
         var = state["var"]
         diff = y - mu
-        mu_new = mu + alpha * diff
-        var = (1 - alpha) * var + alpha * diff * diff
-        sigma = var > eps * eps ? sqrt(var) : eps
+        # Emit against the PRIOR state, so the forward map is the affine change
+        # of coordinates z = (y - mu) / sigma that the inverse applies. Scaling
+        # by the post-update std makes the emission self-normalized (bounded by
+        # 1/sqrt(alpha)) and the affine inverse is then not its inverse.
+        # Cold start: before the variance is informative, scale by the first
+        # nonzero residual, so the first informative emission is +-1.
+        sigma = if var > eps * eps
+            sqrt(var)
+        elseif abs(diff) > eps
+            abs(diff)
+        else
+            eps
+        end
         y_prime = diff / sigma
-        return y_prime, Dict{String,Any}("mu" => mu_new, "var" => var)
+        mu_new = mu + alpha * diff
+        var_new = (1 - alpha) * var + alpha * diff * diff
+        return y_prime, Dict{String,Any}("mu" => mu_new, "var" => var_new)
     end
     function inverse_k(dists::Vector, state::Dict)
         mu = state["mu"]
@@ -270,7 +282,7 @@ end
 # --- GARCH(1,1) volatility transform ---
 
 function garch(; omega::Float64 = 0.01, alpha::Float64 = 0.1, beta::Float64 = 0.85,
-               eps::Float64 = 1e-8)
+               mean_alpha::Float64 = 0.05, eps::Float64 = 1e-8)
     @assert omega > 0
     @assert alpha >= 0
     @assert beta >= 0
@@ -278,16 +290,26 @@ function garch(; omega::Float64 = 0.01, alpha::Float64 = 0.1, beta::Float64 = 0.
         if state === nothing
             persist = alpha + beta
             var0 = persist < 1 ? omega / (1 - persist) : omega / eps
-            return y / max(sqrt(var0), eps), Dict{String,Any}("var" => var0, "last_y" => y)
+            return 0.0, Dict{String,Any}("var" => var0, "last_dev" => 0.0, "mu" => y)
         end
-        var = omega + alpha * state["last_y"]^2 + beta * state["var"]
+        # GARCH conditional variance of the DEVIATION from a running mean, not of
+        # the raw value. alpha * y^2 treats y as a mean-zero return; on a level
+        # series that makes the "volatility" of order |y|, and the inverse then
+        # re-inflates it -- unstable, and it widened real level-series forecasts.
+        # Tracking a mean (like standardize) makes garch shift-invariant. On the
+        # mean-zero returns garch is meant for, mu stays ~0 and this reduces to
+        # the original y/sigma exactly.
+        mu = state["mu"]
+        dev = y - mu
+        var = omega + alpha * state["last_dev"]^2 + beta * state["var"]
         sigma = var > eps * eps ? sqrt(var) : eps
-        y_prime = y / sigma
-        return y_prime, Dict{String,Any}("var" => var, "last_y" => y)
+        y_prime = dev / sigma
+        mu_new = mu + mean_alpha * dev
+        return y_prime, Dict{String,Any}("var" => var, "last_dev" => dev, "mu" => mu_new)
     end
     function inverse_k(dists::Vector, state::Dict)
         sigma = state["var"] > 1e-16 ? sqrt(state["var"]) : 1e-8
-        return Any[dist_scale(d, sigma) for d in dists]
+        return Any[dist_affine(d, sigma, state["mu"]) for d in dists]
     end
     return (forward, inverse_k)
 end
@@ -336,6 +358,83 @@ function seasonal_difference(period::Int = 12)
                                     for (w, m, s) in d.comps]))
             else
                 push!(result, dist_shift(d, anchor_mean))
+            end
+        end
+        return result
+    end
+    return (forward, inverse_k)
+end
+
+# --- hedged seasonal anchor ---
+
+# Residual from a hedged seasonal anchor.
+#
+# Forward:   y'_t = y_t - a_t,  a_t = weight * phaseEMA_{p(t)} + (1-weight) * y_{t-s}
+# Inverse:   shift each horizon's Dist by its anchor; for h >= s the naive
+#            component is a value recovered earlier in the same call and its
+#            variance is convolved in (as in seasonal_difference).
+#
+# The phase-EMA is a recency-weighted mean of same-phase values (memory ~1/alpha
+# cycles); the seasonal-naive is the single value one period ago. The naive alone
+# adapts instantly but is one noisy draw; the phase-EMA averages the noise but
+# lags level shifts. The blend beats either alone on seasonal series.
+# weight = 0 recovers seasonal_difference.
+#
+# Forecasting from same-phase component series follows Viole's NNS package
+# (NNS.ARMA, CRAN, since 2017).
+function seasonal_anchor(period::Int; alpha::Float64 = 0.2, weight::Float64 = 0.5)
+    @assert period >= 1
+    @assert 0 < alpha < 1
+    @assert 0.0 <= weight <= 1.0
+    _anchor(ema_p, snaive) =
+        ema_p === nothing ? snaive : weight * ema_p + (1.0 - weight) * snaive
+    function forward(y::Float64, state::Union{Nothing,Dict})
+        if state === nothing
+            return 0.0, Dict{String,Any}("ema" => Vector{Union{Nothing,Float64}}(nothing, period),
+                                         "buffer" => Float64[y], "n" => 1)
+        end
+        buf = state["buffer"]::Vector{Float64}
+        ema = state["ema"]::Vector{Union{Nothing,Float64}}
+        p = (state["n"] % period)          # 0-based phase, as in Python
+        snaive = length(buf) >= period ? buf[length(buf)-period+1] : buf[end]
+        y_prime = y - _anchor(ema[p+1], snaive)
+        e = ema[p+1]
+        ema[p+1] = e === nothing ? y : e + alpha * (y - e)
+        push!(buf, y)
+        if length(buf) > 2 * period
+            popfirst!(buf)
+        end
+        state["n"] = state["n"] + 1
+        return y_prime, state
+    end
+    function inverse_k(dists::Vector, state::Dict)
+        buf = copy(state["buffer"]::Vector{Float64})
+        ema = state["ema"]::Vector{Union{Nothing,Float64}}
+        n = state["n"]
+        recovered_means = Float64[]
+        recovered_vars = Float64[]
+        result = Any[]
+        for h in 0:(length(dists)-1)
+            p = ((n + h) % period)
+            lag_idx = h - period
+            if lag_idx < 0
+                buf_idx = length(buf) - period + h   # 0-based
+                snaive = (0 <= buf_idx < length(buf)) ? buf[buf_idx+1] : buf[end]
+                snaive_var = 0.0
+            else
+                snaive = recovered_means[lag_idx+1]
+                snaive_var = recovered_vars[lag_idx+1]
+            end
+            a_mean = _anchor(ema[p+1], snaive)
+            a_var = ((1.0 - weight)^2) * snaive_var
+            d = dists[h+1]
+            push!(recovered_means, dist_mean(d) + a_mean)
+            push!(recovered_vars, dist_var(d) + a_var)
+            if a_var > 0.0
+                push!(result, Dist([(w, m + a_mean, sqrt(s * s + a_var))
+                                    for (w, m, s) in d.comps]))
+            else
+                push!(result, dist_shift(d, a_mean))
             end
         end
         return result
@@ -453,6 +552,53 @@ _dot(a::Vector{Float64}, b::Vector{Float64}, n::Int) = fsum(a[i+1] * b[i+1] for 
 
 # --- AR(p) with recursive least squares ---
 
+# Spectral radius of the AR companion matrix (largest |characteristic root|).
+# The h-step AR forecast is governed by powers of this matrix: it converges iff
+# the radius is < 1 and diverges geometrically otherwise. Closed form for p <= 2;
+# power iteration above. The 60 fixed iterations and the zero-guard are
+# load-bearing for 1e-6 parity with transform.py::_ar_spectral_radius.
+function _ar_spectral_radius(phi::Vector{Float64})
+    p = length(phi)
+    if p == 1
+        return abs(phi[1])
+    end
+    if p == 2
+        a, b = phi[1], phi[2]
+        disc = a * a + 4.0 * b
+        if disc >= 0.0
+            r = sqrt(disc)
+            return max(abs((a + r) / 2.0), abs((a - r) / 2.0))
+        end
+        return hypot(a / 2.0, sqrt(-disc) / 2.0)   # |complex root|
+    end
+    v = ones(Float64, p)
+    rho = 0.0
+    for _ in 1:60
+        nv = vcat(sum(phi[j] * v[j] for j in 1:p), v[1:(p-1)])
+        m = maximum(abs.(nv))
+        if m == 0
+            m = 1.0
+        end
+        v = nv ./ m
+        rho = m
+    end
+    return rho
+end
+
+# Damp AR coefficients into the stationary region for forecasting. An online fit
+# from a handful of warm-up points can land on an explosive root whose multi-step
+# forecast diverges. Scaling phi_j by gamma^(j+1) scales every companion
+# eigenvalue by gamma, so gamma = margin / rho brings the radius to margin and
+# leaves an already-stationary fit untouched.
+function _ar_stationary(phi::Vector{Float64}, margin::Float64 = 0.999)
+    rho = _ar_spectral_radius(phi)
+    if rho <= margin
+        return phi
+    end
+    g = margin / rho
+    return [phi[j] * g^j for j in 1:length(phi)]
+end
+
 function ar(order::Int = 2; lam::Float64 = 0.99, ridge::Float64 = 1.0, decay::Float64 = 0.0)
     @assert order >= 1
     @assert 0 < lam <= 1
@@ -505,13 +651,30 @@ function ar(order::Int = 2; lam::Float64 = 0.99, ridge::Float64 = 1.0, decay::Fl
     end
     function inverse_k(dists::Vector, state::Dict)
         buf = copy(state["buffer"]::Vector{Float64})
-        phi = state["phi"]::Vector{Float64}
+        # Forecast with stationarity-constrained coefficients: a non-stationary
+        # online fit has no convergent multi-step forecast. The one-step fit in
+        # state is left intact; only the extrapolation is kept well-posed.
+        phi = _ar_stationary(state["phi"]::Vector{Float64})
+        H = length(dists)
+        # Impulse responses psi_0..psi_{H-1}: psi_0 = 1, psi_i = sum_j phi_j psi_{i-j}.
+        # The h-step variance is sigma^2 * sum_{i<=h} psi_i^2, NOT a recursion on
+        # recovered variances -- successive horizons share one innovation, so
+        # summing phi_j^2 * var_{h-j} both mis-weights and double counts it.
+        psi = Float64[1.0]
+        for i in 1:(H-1)
+            s = 0.0
+            for j in 0:(p-1)
+                if i - 1 - j >= 0
+                    s += phi[j+1] * psi[i-j]
+                end
+            end
+            push!(psi, s)
+        end
         recovered_means = Float64[]
-        recovered_vars = Float64[]
         result = Any[]
-        for h in 0:(length(dists)-1)
+        cum_psi2 = 0.0
+        for h in 0:(H-1)
             ar_mean = 0.0
-            ar_var = 0.0
             for j in 0:(p-1)
                 lag_h = h - j - 1
                 if lag_h < 0
@@ -522,16 +685,15 @@ function ar(order::Int = 2; lam::Float64 = 0.99, ridge::Float64 = 1.0, decay::Fl
                 else
                     if lag_h < length(recovered_means)
                         ar_mean += phi[j+1] * recovered_means[lag_h+1]
-                        ar_var += phi[j+1]^2 * recovered_vars[lag_h+1]
                     end
                 end
             end
             d = dists[h+1]
             total_mean = dist_mean(d) + ar_mean
-            total_var = dist_var(d) + ar_var
+            cum_psi2 += psi[h+1] * psi[h+1]
+            total_var = cum_psi2 * dist_var(d)
             total_std = total_var > 0 ? sqrt(total_var) : max(dist_std(d), 1e-12)
             push!(recovered_means, total_mean)
-            push!(recovered_vars, total_var)
             push!(result, dist_gaussian(total_mean, total_std))
         end
         return result
@@ -615,13 +777,26 @@ function grouped_ar(max_lag::Int = 16; lam::Float64 = 0.99, ridge::Float64 = 1.0
     function inverse_k(dists::Vector, state::Dict)
         buf = copy(state["buffer"]::Vector{Float64})
         theta = state["theta"]::Vector{Float64}
-        phi = Float64[theta[groups[j+1]+1] for j in 0:(max_lag-1)]
+        # Expand group coefficients to per-lag, then constrain to stationarity
+        # for a well-posed forecast (same as ar(); grouped AR is AR-family).
+        phi = _ar_stationary(Float64[theta[groups[j+1]+1] for j in 0:(max_lag-1)])
+        H = length(dists)
+        # Impulse responses, as in ar(): h-step variance is sigma^2 * sum psi_i^2.
+        psi = Float64[1.0]
+        for i in 1:(H-1)
+            s = 0.0
+            for j in 0:(max_lag-1)
+                if i - 1 - j >= 0
+                    s += phi[j+1] * psi[i-j]
+                end
+            end
+            push!(psi, s)
+        end
         recovered_means = Float64[]
-        recovered_vars = Float64[]
         result = Any[]
-        for h in 0:(length(dists)-1)
+        cum_psi2 = 0.0
+        for h in 0:(H-1)
             ar_mean = 0.0
-            ar_var = 0.0
             for j in 0:(max_lag-1)
                 lag_h = h - j - 1
                 if lag_h < 0
@@ -632,16 +807,15 @@ function grouped_ar(max_lag::Int = 16; lam::Float64 = 0.99, ridge::Float64 = 1.0
                 else
                     if lag_h < length(recovered_means)
                         ar_mean += phi[j+1] * recovered_means[lag_h+1]
-                        ar_var += phi[j+1]^2 * recovered_vars[lag_h+1]
                     end
                 end
             end
             d = dists[h+1]
             total_mean = dist_mean(d) + ar_mean
-            total_var = dist_var(d) + ar_var
+            cum_psi2 += psi[h+1] * psi[h+1]
+            total_var = cum_psi2 * dist_var(d)
             total_std = total_var > 0 ? sqrt(total_var) : max(dist_std(d), 1e-12)
             push!(recovered_means, total_mean)
-            push!(recovered_vars, total_var)
             push!(result, dist_gaussian(total_mean, total_std))
         end
         return result

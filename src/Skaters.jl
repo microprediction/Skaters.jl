@@ -28,7 +28,7 @@ export Dist, SplicedDist, dist_gaussian, dist_combine, dist_mean, dist_var, dist
     leaf, scale_mixture_leaf, crps_leaf, garch_leaf,
     conjugate, ema,
     difference, fractional_difference, standardize, ema_transform, ou_transform,
-    theta, drift, holt_linear, garch, seasonal_difference, power_transform,
+    theta, drift, holt_linear, garch, seasonal_difference, seasonal_anchor, power_transform,
     ar, grouped_ar, yeo_johnson,
     precision_weighted_ensemble, bayesian_ensemble, multiscale, sticky,
     terminal_leaf_ensemble, gpdtails, parade, laplace,
