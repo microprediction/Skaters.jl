@@ -42,6 +42,14 @@ function _build_candidates(k::Int, leaf_fn = leaf)
         push!(candidates, conjugate(leaf_fn(k), seasonal_difference(period), k)); push!(depths, 1)
     end
 
+    # Hedged seasonal anchor: phase-EMA blended 50/50 with the seasonal-naive.
+    # MUST stay in this position -- the ensemble aligns depths and weights by
+    # candidate INDEX, so inserting elsewhere silently repermutes the pool
+    # relative to the reference.
+    for period in (7, 12, 24)
+        push!(candidates, conjugate(leaf_fn(k), seasonal_anchor(period), k)); push!(depths, 1)
+    end
+
     for period in (7, 12, 24)
         for alpha in (0.05, 0.1)
             push!(candidates, conjugate(conjugate(leaf_fn(k), ema_transform(alpha), k),
