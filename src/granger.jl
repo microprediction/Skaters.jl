@@ -217,6 +217,8 @@ function granger(params::Dict = granger_params("monthly"); k::Int = 1)
                 # +Inf (an exact hit on a lattice atom) counts +1e6; NaN or -Inf -1e6
                 state["cum"][j] += lp == Inf ? 1e6 : (isfinite(lp) ? lp : -1e6)
             end
+            # re-centre: the weights depend only on the difference
+            state["cum"] .-= maximum(state["cum"])
         end
         current[] = _granger_gate(P["gate"], _granger_features(state, n))
         lrn = nothing
