@@ -21,7 +21,9 @@ include("cov.jl")
 include("periodicity.jl")
 include("spec.jl")
 include("search.jl")
+include("granger.jl")
 
+export granger, granger_params, MixtureDist
 export Dist, SplicedDist, dist_gaussian, dist_combine, dist_mean, dist_var, dist_std,
     dist_logpdf, dist_cdf, dist_crps, dist_quantile, dist_pdf, dist_prune,
     dist_shift, dist_scale, dist_affine, dist_body,

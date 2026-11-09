@@ -614,22 +614,31 @@ function ar(order::Int = 2; lam::Float64 = 0.99, ridge::Float64 = 1.0, decay::Fl
     function forward(y::Float64, state::Union{Nothing,Dict})
         if state === nothing
             state = Dict{String,Any}("buffer" => Float64[], "phi" => zeros(Float64, p),
-                "P" => _init_P(), "n" => 0)
+                "phi_used" => zeros(Float64, p), "P" => _init_P(), "n" => 0)
         end
         buf = state["buffer"]::Vector{Float64}
         phi = state["phi"]::Vector{Float64}
+        if !haskey(state, "phi_used")
+            # a state from before skaters#232/#235 carries only the raw coefficients
+            state["phi_used"] = _ar_stationary(copy(phi))
+        end
         state["n"] += 1
         if length(buf) >= p
             x = Float64[buf[length(buf)-i] for i in 0:(p-1)]
-            prediction = fsum(phi[i+1] * x[i+1] for i in 0:(p-1))
+            # the residual EMITTED (and inverse_k's forecast) uses the stationarity-
+            # projected coefficients from the end of the previous tick (skaters#232);
+            # the RLS keeps fitting the raw problem with its own prediction error
+            phi_used = state["phi_used"]::Vector{Float64}
+            prediction = fsum(phi_used[i+1] * x[i+1] for i in 0:(p-1))
             residual = y - prediction
+            raw_residual = y - fsum(phi[i+1] * x[i+1] for i in 0:(p-1))
             P = state["P"]::Vector{Float64}
             Px = _mat_vec(P, x, p)
             denom = lam + _dot(x, Px, p)
             if abs(denom) > 1e-15
                 K = [px / denom for px in Px]
                 for i in 0:(p-1)
-                    phi[i+1] += K[i+1] * residual
+                    phi[i+1] += K[i+1] * raw_residual
                 end
                 for i in 0:(p-1)
                     for j in 0:(p-1)
@@ -640,6 +649,8 @@ function ar(order::Int = 2; lam::Float64 = 0.99, ridge::Float64 = 1.0, decay::Fl
                     copyto!(P, _init_P())
                 end
             end
+            # re-project after every update so the next emission and inverse_k agree
+            state["phi_used"] = _ar_stationary(copy(phi))
         else
             residual = y
         end
@@ -654,7 +665,8 @@ function ar(order::Int = 2; lam::Float64 = 0.99, ridge::Float64 = 1.0, decay::Fl
         # Forecast with stationarity-constrained coefficients: a non-stationary
         # online fit has no convergent multi-step forecast. The one-step fit in
         # state is left intact; only the extrapolation is kept well-posed.
-        phi = _ar_stationary(state["phi"]::Vector{Float64})
+        phi = haskey(state, "phi_used") ? (state["phi_used"]::Vector{Float64}) :
+              _ar_stationary(state["phi"]::Vector{Float64})
         H = length(dists)
         # Impulse responses psi_0..psi_{H-1}: psi_0 = 1, psi_i = sum_j phi_j psi_{i-j}.
         # The h-step variance is sigma^2 * sum_{i<=h} psi_i^2, NOT a recursion on
