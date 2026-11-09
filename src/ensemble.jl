@@ -35,8 +35,10 @@ function precision_weighted_ensemble(skaters::Vector; k::Int = 1, floor::Float64
             weights = Float64[]
             for i in 1:n
                 mse = running_mse_get(stats[i][h+1])
-                w = (isfinite(mse) && mse > 0) ? 1.0 / mse : floor
-                push!(weights, max(w, floor))
+                # inf exactly when immature; a mature perfect forecaster (mse == 0)
+                # gets the highest precision, capped at 1/floor (skaters#220).
+                w = isfinite(mse) ? 1.0 / max(mse, floor) : floor
+                push!(weights, w)
             end
             horizon_dists = Any[all_dists[i][h+1] for i in 1:n]
             push!(combined, dist_combine(horizon_dists, weights))

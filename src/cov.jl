@@ -1,5 +1,5 @@
 # Online covariance estimation: running (Welford), EMA, and Ledoit-Wolf
-# shrinkage toward identity. Port of skaters/cov/.
+# shrinkage toward the diagonal. Port of skaters/cov/.
 #
 # API pattern (mirrors the Python tuple):
 #   mean, cov, state = f(y, state)
@@ -49,49 +49,20 @@ function ema_cov(y::Vector{Float64}, state::Union{Nothing,Dict}, alpha::Float64 
     return copy(mean), copy(cov), state
 end
 
+# Shrinks the ema_cov covariance toward its own diagonal: (1-rho)*C + rho*diag(C)
+# is PSD whenever C is (skaters#224). The inner update is delegated to ema_cov.
 function ledoit_wolf_cov(y::Vector{Float64}, state::Union{Nothing,Dict},
                          alpha::Float64 = 0.05, shrinkage::Float64 = 0.5)
     n = length(y)
-    if state === nothing
-        corr = [i == j ? 1.0 : 0.0 for i in 1:n for j in 1:n]
-        state = Dict{String,Any}("mean" => copy(y), "var" => zeros(n),
-            "corr" => corr, "n" => 1)
-        return copy(y), zeros(n * n), state
-    end
-    mean = state["mean"]::Vector{Float64}
-    var = state["var"]::Vector{Float64}
-    corr = state["corr"]::Vector{Float64}
-    state["n"] += 1
-
-    delta = [y[i] - mean[i] for i in 1:n]
-    for i in 1:n
-        mean[i] += alpha * delta[i]
-    end
-    delta2 = [y[i] - mean[i] for i in 1:n]
-    for i in 1:n
-        var[i] = (1 - alpha) * var[i] + alpha * delta[i] * delta2[i]
-    end
-
-    # Update correlations in standardized space, clamped to [-1, 1].
-    s = [var[i] > 1e-16 ? sqrt(var[i]) : 1e-8 for i in 1:n]
-    for i in 1:n
-        for j in (i+1):n
-            z_cross = (delta[i] / s[i]) * (delta[j] / s[j])
-            idx = (i - 1) * n + j
-            r = (1 - alpha) * corr[idx] + alpha * z_cross
-            r = max(-1.0, min(1.0, r))
-            corr[idx] = r
-            corr[(j-1)*n+i] = r
-        end
-    end
-
-    # Shrink correlation toward identity and reconstitute the covariance.
+    inner_state = state !== nothing ? state["inner"] : nothing
+    mean, cov, inner_state = ema_cov(y, inner_state, alpha)
+    state = Dict{String,Any}("inner" => inner_state)
     shrunk = zeros(n * n)
     for i in 1:n
         for j in 1:n
             idx = (i - 1) * n + j
-            shrunk[idx] = i == j ? var[i] : (1 - shrinkage) * corr[idx] * s[i] * s[j]
+            shrunk[idx] = i == j ? cov[idx] : (1.0 - shrinkage) * cov[idx]
         end
     end
-    return copy(mean), shrunk, state
+    return mean, shrunk, state
 end

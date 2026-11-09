@@ -40,6 +40,7 @@ end
 function dist_pdf(d::Dist, x::Float64)::Float64
     total = 0.0
     for (w, m, s) in d.comps
+        w <= 0.0 && continue    # skaters#222: 0 * inf at a discarded (s=0) atom is NaN, not 0
         total += w * gaussian_pdf(x, m, s)
     end
     return total
@@ -154,7 +155,8 @@ function dist_prune(d::Dist, max_components::Int = 20)
     end
     # Sort so the merge path is order-independent: by (mean, std, weight).
     comps = sort(d.comps, by = c -> (c[2], c[3], c[1]))
-    scale = abs(comps[1][2]) + abs(comps[end][2]) + 1e-12
+    # Translation-invariant (skaters#226): sorted by mean, so this is the span.
+    scale = (comps[end][2] - comps[1][2]) + 1e-12
     while length(comps) > max_components
         n = length(comps)
         best_dist = Inf
