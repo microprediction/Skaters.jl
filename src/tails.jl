@@ -280,7 +280,7 @@ function gpdtails(base, k::Int; level::Float64 = 0.98, nexc::Int = 500,
         if state === nothing
             state = Dict{String,Any}("base" => nothing, "pending" => Any[],
                 "tails" => Any[Dict{String,Any}("up" => _tail_new(), "lo" => _tail_new(),
-                    "warm" => Float64[], "n" => 0) for _ in 1:k])
+                    "warm" => Float64[], "n" => 0, "skipped" => 0) for _ in 1:k])
         end
         pend = state["pending"]
         n = length(pend)
@@ -299,6 +299,14 @@ function gpdtails(base, k::Int; level::Float64 = 0.98, nexc::Int = 500,
             up = th["up"]::Dict
             lo = th["lo"]::Dict
             if up["t"] === nothing
+                # The first resolved z's at horizon m >= 2 are PITs of the trunk's
+                # warm-up fallback, not of the body this splice calibrates; they
+                # stay out of the threshold sample (skaters 450ad05). m = 1 is
+                # untouched, so k = 1 is bit-identical.
+                if m >= 2 && get(th, "skipped", 0) < 2 * m
+                    th["skipped"] = get(th, "skipped", 0) + 1
+                    continue
+                end
                 warm = th["warm"]::Vector{Float64}
                 push!(warm, z)
                 if length(warm) >= warmup
