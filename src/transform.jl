@@ -657,18 +657,25 @@ function _ar_spectral_radius(phi::Vector{Float64})
         end
         return hypot(a / 2.0, sqrt(-disc) / 2.0)   # |complex root|
     end
-    v = ones(Float64, p)
-    rho = 0.0
-    for _ in 1:60
-        nv = vcat(sum(phi[j] * v[j] for j in 1:p), v[1:(p-1)])
-        m = maximum(abs.(nv))
-        if m == 0
-            m = 1.0
+    # Power iteration from one seed can miss the dominant eigenvalue when the
+    # seed is (near-)orthogonal to it (skaters#232: phi = [3,-2,0,0,0] seeded at
+    # all-ones reads 1, true radius 2). Two seeds, take the max.
+    best = 0.0
+    for seed in (ones(Float64, p), Float64[(-1.0)^i for i in 0:(p-1)])
+        v = copy(seed)
+        rho = 0.0
+        for _ in 1:60
+            nv = vcat(fsum(phi[j] * v[j] for j in 1:p), v[1:(p-1)])
+            m = maximum(abs.(nv))
+            if m == 0
+                m = 1.0
+            end
+            v = nv ./ m
+            rho = m
         end
-        v = nv ./ m
-        rho = m
+        best = max(best, rho)
     end
-    return rho
+    return best
 end
 
 # Damp AR coefficients into the stationary region for forecasting. An online fit
@@ -760,17 +767,10 @@ function ar(order::Int = 2; lam::Float64 = 0.99, ridge::Float64 = 1.0, decay::Fl
         # summing phi_j^2 * var_{h-j} both mis-weights and double counts it.
         psi = Float64[1.0]
         for i in 1:(H-1)
-            s = 0.0
-            for j in 0:(p-1)
-                if i - 1 - j >= 0
-                    s += phi[j+1] * psi[i-j]
-                end
-            end
-            push!(psi, s)
+            push!(psi, fsum(Float64[phi[j+1] * psi[i-j] for j in 0:(p-1) if i - 1 - j >= 0]))
         end
         recovered_means = Float64[]
         result = Any[]
-        cum_psi2 = 0.0
         for h in 0:(H-1)
             ar_mean = 0.0
             for j in 0:(p-1)
@@ -788,8 +788,13 @@ function ar(order::Int = 2; lam::Float64 = 0.99, ridge::Float64 = 1.0, decay::Fl
             end
             d = dists[h+1]
             total_mean = dist_mean(d) + ar_mean
-            cum_psi2 += psi[h+1] * psi[h+1]
-            total_var = cum_psi2 * dist_var(d)
+            # Var(y_{t+h+1}) = sum_i psi_{h-i}^2 var_i: each future innovation
+            # enters with its own variance (skaters#245); plain accumulation in
+            # the reference's order.
+            total_var = 0.0
+            for i in 0:h
+                total_var += psi[h-i+1] * psi[h-i+1] * dist_var(dists[i+1])
+            end
             total_std = total_var > 0 ? sqrt(total_var) : max(dist_std(d), 1e-12)
             push!(recovered_means, total_mean)
             push!(result, dist_gaussian(total_mean, total_std))
@@ -837,22 +842,32 @@ function grouped_ar(max_lag::Int = 16; lam::Float64 = 0.99, ridge::Float64 = 1.0
     function forward(y::Float64, state::Union{Nothing,Dict})
         if state === nothing
             state = Dict{String,Any}("buffer" => Float64[], "theta" => zeros(Float64, n_groups),
-                "P" => _eye(n_groups, ridge), "n" => 0)
+                "phi_used" => zeros(Float64, max_lag), "P" => _eye(n_groups, ridge), "n" => 0)
         end
         buf = state["buffer"]::Vector{Float64}
         theta = state["theta"]::Vector{Float64}
+        if !haskey(state, "phi_used")
+            # a state from before skaters#235: the projected per-lag set follows from theta
+            state["phi_used"] = _ar_stationary(Float64[theta[groups[j+1]+1] for j in 0:(max_lag-1)])
+        end
         state["n"] += 1
         if length(buf) >= max_lag
             x = _group_regressor(buf, groups, n_groups, max_lag)
-            prediction = fsum(theta[g+1] * x[g+1] for g in 0:(n_groups-1))
+            # Emitted residual uses the previous tick's stationarity-projected,
+            # per-lag coefficients (skaters#232/#235), so forward's emission and
+            # inverse_k's reconstruction agree; the RLS keeps fitting the raw
+            # group-level problem with its own prediction error.
+            phi_used = state["phi_used"]::Vector{Float64}
+            prediction = fsum(phi_used[j+1] * buf[length(buf)-j] for j in 0:(max_lag-1))
             residual = y - prediction
+            raw_residual = y - fsum(theta[g+1] * x[g+1] for g in 0:(n_groups-1))
             P = state["P"]::Vector{Float64}
             Px = _mat_vec(P, x, n_groups)
             denom = lam + _dot(x, Px, n_groups)
             if abs(denom) > 1e-15
                 K = [px / denom for px in Px]
                 for g in 0:(n_groups-1)
-                    theta[g+1] += K[g+1] * residual
+                    theta[g+1] += K[g+1] * raw_residual
                 end
                 for i in 0:(n_groups-1)
                     for j in 0:(n_groups-1)
@@ -863,6 +878,7 @@ function grouped_ar(max_lag::Int = 16; lam::Float64 = 0.99, ridge::Float64 = 1.0
                     copyto!(P, _eye(n_groups, ridge))
                 end
             end
+            state["phi_used"] = _ar_stationary(Float64[theta[groups[j+1]+1] for j in 0:(max_lag-1)])
         else
             residual = y
         end
@@ -874,25 +890,18 @@ function grouped_ar(max_lag::Int = 16; lam::Float64 = 0.99, ridge::Float64 = 1.0
     end
     function inverse_k(dists::Vector, state::Dict)
         buf = copy(state["buffer"]::Vector{Float64})
-        theta = state["theta"]::Vector{Float64}
-        # Expand group coefficients to per-lag, then constrain to stationarity
-        # for a well-posed forecast (same as ar(); grouped AR is AR-family).
-        phi = _ar_stationary(Float64[theta[groups[j+1]+1] for j in 0:(max_lag-1)])
+        # Same coefficients forward() already emitted residuals under
+        # (skaters#232), except for a pre-#235 state that has no cache yet.
+        phi = haskey(state, "phi_used") ? (state["phi_used"]::Vector{Float64}) :
+              _ar_stationary(Float64[state["theta"][groups[j+1]+1] for j in 0:(max_lag-1)])
         H = length(dists)
         # Impulse responses, as in ar(): h-step variance is sigma^2 * sum psi_i^2.
         psi = Float64[1.0]
         for i in 1:(H-1)
-            s = 0.0
-            for j in 0:(max_lag-1)
-                if i - 1 - j >= 0
-                    s += phi[j+1] * psi[i-j]
-                end
-            end
-            push!(psi, s)
+            push!(psi, fsum(Float64[phi[j+1] * psi[i-j] for j in 0:(max_lag-1) if i - 1 - j >= 0]))
         end
         recovered_means = Float64[]
         result = Any[]
-        cum_psi2 = 0.0
         for h in 0:(H-1)
             ar_mean = 0.0
             for j in 0:(max_lag-1)
@@ -910,8 +919,13 @@ function grouped_ar(max_lag::Int = 16; lam::Float64 = 0.99, ridge::Float64 = 1.0
             end
             d = dists[h+1]
             total_mean = dist_mean(d) + ar_mean
-            cum_psi2 += psi[h+1] * psi[h+1]
-            total_var = cum_psi2 * dist_var(d)
+            # Var(y_{t+h+1}) = sum_i psi_{h-i}^2 var_i: each future innovation
+            # enters with its own variance (skaters#245); plain accumulation in
+            # the reference's order.
+            total_var = 0.0
+            for i in 0:h
+                total_var += psi[h-i+1] * psi[h-i+1] * dist_var(dists[i+1])
+            end
             total_std = total_var > 0 ? sqrt(total_var) : max(dist_std(d), 1e-12)
             push!(recovered_means, total_mean)
             push!(result, dist_gaussian(total_mean, total_std))
