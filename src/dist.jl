@@ -9,9 +9,19 @@ abstract type AbstractDist end
 struct Dist <: AbstractDist
     comps::Vector{NTuple{3,Float64}}
     function Dist(comps::Vector{NTuple{3,Float64}})
-        @assert length(comps) > 0
+        # Validation as in the reference (skaters 21f1de5): weights finite and
+        # >= 0, means finite, stds finite and >= 0 (0 is a point mass), positive
+        # total. Thrown errors, not @assert, so the checks always run.
+        isempty(comps) && throw(ArgumentError("Dist needs at least one component"))
+        for (w, m, s) in comps
+            (isfinite(w) && w >= 0.0) ||
+                throw(ArgumentError("component weight must be finite and >= 0, got $w"))
+            isfinite(m) || throw(ArgumentError("component mean must be finite, got $m"))
+            (isfinite(s) && s >= 0.0) ||
+                throw(ArgumentError("component std must be finite and >= 0, got $s"))
+        end
         wt = fsum(c[1] for c in comps)
-        @assert wt > 0
+        wt > 0.0 || throw(ArgumentError("total component weight must be positive"))
         new([(c[1] / wt, c[2], c[3]) for c in comps])
     end
 end
@@ -22,10 +32,15 @@ dist_gaussian(mean::Float64 = 0.0, std::Float64 = 1.0) = Dist([(1.0, mean, std)]
 
 function dist_combine(dists::Vector, weights::Union{Nothing,Vector{Float64}} = nothing)
     n = length(dists)
+    n == 0 && throw(ArgumentError("combine needs at least one distribution"))
     if weights === nothing
         weights = fill(1.0 / n, n)
     end
+    length(weights) == n ||
+        throw(ArgumentError("combine got $n distributions but $(length(weights)) weights"))
     w_total = fsum(weights)
+    (isfinite(w_total) && w_total > 0.0) ||
+        throw(ArgumentError("combine weights must be finite with a positive total"))
     comps = NTuple{3,Float64}[]
     for (d, w_outer) in zip(dists, weights)
         for (w_inner, m, s) in d.comps
@@ -109,11 +124,35 @@ function dist_std(d::Dist)::Float64
 end
 
 function dist_quantile(d::Dist, p::Float64; tol::Float64 = 1e-9, max_iter::Int = 100)::Float64
-    @assert 0 < p < 1
+    0 < p < 1 || throw(ArgumentError("quantile needs 0 < p < 1, got $p"))
     mu = dist_mean(d)
     sigma = sqrt(dist_var(d))
     lo = mu - 8 * sigma
     hi = mu + 8 * sigma
+    # Expand the bracket geometrically until it contains p (skaters 21f1de5); it
+    # never fires when mu +- 8 sigma already sufficed, so results are unchanged.
+    width = max(16 * sigma, 1e-12)
+    ok = false
+    for _ in 1:120
+        if dist_cdf(d, lo) <= p
+            ok = true
+            break
+        end
+        lo -= width
+        width *= 2.0
+    end
+    ok || error("could not bracket quantile p=$p from below")
+    width = max(16 * sigma, 1e-12)
+    ok = false
+    for _ in 1:120
+        if dist_cdf(d, hi) >= p
+            ok = true
+            break
+        end
+        hi += width
+        width *= 2.0
+    end
+    ok || error("could not bracket quantile p=$p from above")
     for _ in 1:max_iter
         mid = 0.5 * (lo + hi)
         if dist_cdf(d, mid) < p
@@ -133,13 +172,13 @@ end
 dist_shift(d::Dist, delta::Float64) = Dist([(w, m + delta, s) for (w, m, s) in d.comps])
 
 function dist_scale(d::Dist, factor::Float64)
-    @assert factor != 0
+    factor == 0 && throw(ArgumentError("scale factor must be nonzero"))
     f = abs(factor)
     return Dist([(w, m * factor, s * f) for (w, m, s) in d.comps])
 end
 
 function dist_affine(d::Dist, a::Float64, b::Float64)
-    @assert a != 0
+    a == 0 && throw(ArgumentError("affine multiplier must be nonzero"))
     return Dist([(w, a * m + b, abs(a) * s) for (w, m, s) in d.comps])
 end
 
