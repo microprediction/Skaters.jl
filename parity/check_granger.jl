@@ -9,20 +9,22 @@ bad = 0
 for (key, st) in V
     freq = split(key, "/")[1]
     g = granger(granger_params(String(freq)))
-    ys = Float64.(st["ys"]); rows = st["rows"]
+    ys = Float64[v === nothing ? NaN : Float64(v) for v in st["ys"]]   # null = missing
+    rows = st["rows"]
     s = nothing
     for t in 1:(length(ys)-1)
         d, s = g(ys[t], s)
         m = d[1]
         got = [Skaters.dist_logpdf(m, ys[t+1]), Skaters.dist_mean(m), Skaters.dist_std(m), m.w[1],
                Skaters.dist_quantile(m, 0.1), Skaters.dist_quantile(m, 0.9)]
-        want = Float64.(rows[t])
+        want = rows[t]
         for i in eachindex(got)
-            dev = abs(got[i] - want[i])
-            global worst = max(worst, dev / max(1.0, abs(want[i])))
-            if dev > ATOL + RTOL * abs(want[i])
+            want[i] === nothing && continue        # no score at a missing next value
+            w = Float64(want[i]); dev = abs(got[i] - w)
+            global worst = max(worst, dev / max(1.0, abs(w)))
+            if dev > ATOL + RTOL * abs(w)
                 global bad += 1
-                bad <= 5 && println("$key step $(t-1) q$i: julia $(got[i]) python $(want[i])")
+                bad <= 5 && println("$key step $(t-1) q$i: julia $(got[i]) python $(w)")
             end
         end
     end

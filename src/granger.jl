@@ -5,7 +5,8 @@
 # After Clive Granger, whose work with Bates (1969) founded forecast
 # combination. The issued predictive is the Aggregating-Algorithm mixture of
 # laplace and its trained twin under log loss, so its total log score is never
-# more than log(1 / pi_lap) behind laplace's (log 4 at the shipped 0.25).
+# more than log(1 / pi_lap) behind laplace's (log 4 at the shipped 0.25), up to
+# floating-point rounding.
 
 import JSON
 
@@ -139,8 +140,13 @@ function MixtureDist(dists::Vector, lw::Vector{Float64})
 end
 
 function dist_logpdf(d::MixtureDist, x::Float64)::Float64
-    t = Float64[d.log_w[i] + dist_logpdf(d.dists[i], x) for i in eachindex(d.dists)]
+    t = Float64[]
+    for i in eachindex(d.dists)
+        v = dist_logpdf(d.dists[i], x)
+        push!(t, isnan(v) ? -Inf : d.log_w[i] + v)   # a NaN component contributes nothing
+    end
     m = maximum(t)
+    m == Inf && return Inf
     m == -Inf && return -Inf
     return m + log(sum(exp.(t .- m)))
 end
@@ -189,7 +195,9 @@ laplace's trained twin mixed with laplace (horizon 1). Returns a skater
 function granger(params::Dict = granger_params("monthly"); k::Int = 1)
     k == 1 || error("granger is trained at horizon 1 only")
     P = params
+    get(P, "granger_format", 1) == 1 || error("unsupported granger parameter format")
     pi = _f(P["pi_lap"])
+    0.0 < pi < 1.0 || error("pi_lap must lie in (0, 1)")
     log_prior = [log(pi), log(1.0 - pi)]
     ref = laplace(; k = 1)
     current = Ref{Any}(nothing)           # the gate's offset for the current call only
@@ -206,7 +214,8 @@ function granger(params::Dict = granger_params("monthly"); k::Int = 1)
         if finite && state["pend"] !== nothing
             for j in 1:2
                 lp = dist_logpdf(state["pend"][j], yv)
-                state["cum"][j] += isfinite(lp) ? lp : -1e6
+                # +Inf (an exact hit on a lattice atom) counts +1e6; NaN or -Inf -1e6
+                state["cum"][j] += lp == Inf ? 1e6 : (isfinite(lp) ? lp : -1e6)
             end
         end
         current[] = _granger_gate(P["gate"], _granger_features(state, n))
