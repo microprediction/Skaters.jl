@@ -165,7 +165,9 @@ function dist_quantile(d::MixtureDist, p::Float64; tol::Float64 = 1e-9, max_iter
     0 < p < 1 || error("quantile needs 0 < p < 1, got $(p)")
     qs = Float64[dist_quantile(q, p) for q in d.dists]
     lo, hi = minimum(qs), maximum(qs)
-    hi - lo < tol && return 0.5 * (lo + hi)
+    # absolute tol at scale >= 1, relative below it so small-scale series keep their digits
+    tol = tol * min(1.0, max(abs(lo), abs(hi)))
+    hi - lo <= tol && return 0.5 * (lo + hi)
     for _ in 1:max_iter
         mid = 0.5 * (lo + hi)
         if dist_cdf(d, mid) < p
@@ -173,7 +175,7 @@ function dist_quantile(d::MixtureDist, p::Float64; tol::Float64 = 1e-9, max_iter
         else
             hi = mid
         end
-        hi - lo < tol && break
+        hi - lo <= tol && break
     end
     return 0.5 * (lo + hi)
 end
