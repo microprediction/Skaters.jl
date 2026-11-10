@@ -100,7 +100,12 @@ function _search_expand(pool, k::Int, top_n::Int, max_depth::Int, transforms,
             key = join(new_recipe, "|")
             key in existing && continue
             push!(existing, key)
-            push!(children, _search_entry(length(new_recipe), new_recipe, k, child_cost))
+            child = _search_entry(length(new_recipe), new_recipe, k, child_cost)
+            # Parent-relative initialization (skaters#223): the child inherits the
+            # parent's current log_w as its starting evidence, as it inherits the
+            # parent's warm state, so it is on the same basis as the incumbents.
+            child["log_w"] = copy(parent["log_w"])
+            push!(children, child)
         end
     end
     return children

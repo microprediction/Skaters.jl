@@ -168,12 +168,21 @@ function garch_leaf(k::Int = 1; gamma::Float64 = 0.02, refit_every::Int = 40,
                         om = base * c > 1e-12 ? base * c : 1e-12
                         hh = om / (1.0 - al - be)
                         v = 0.0
+                        prev = 0.0
+                        first = true
                         for r in resid
-                            hh = om + al * (r * r) + be * hh
-                            if hh <= 1e-300
-                                hh = 1e-300
+                            # h_t is built from r_{t-1}, never from r_t itself; the
+                            # first point is scored under the unconditional variance
+                            # (skaters#244).
+                            if !first
+                                hh = om + al * (prev * prev) + be * hh
+                                if hh <= 1e-300
+                                    hh = 1e-300
+                                end
                             end
                             v += log(hh) + (r * r) / hh
+                            prev = r
+                            first = false
                         end
                         if v < best_v
                             best_v = v; best_om = om; best_al = al; best_be = be
@@ -196,7 +205,16 @@ function garch_leaf(k::Int = 1; gamma::Float64 = 0.02, refit_every::Int = 40,
             g = gamma > 1.0 / s["n"] ? gamma : 1.0 / s["n"]
             s["w"] = [(1 - g) * w[i] + g * dens[i] / total for i in 1:K]
         end
-        d = Dist([(s["w"][i], 0.0, C[i] * sigma) for i in 1:K])
+        # The emitted Dist forecasts r_{t+1}, so its scale is the NEXT conditional
+        # variance h_{t+1} = omega + alpha r_t^2 + beta h_t under the (possibly just
+        # refit) parameters; `sigma` above is sqrt(h_t), which scores r_t for the
+        # weight update (skaters#239).
+        h_next = s["omega"] + s["alpha"] * y * y + s["beta"] * h
+        if !(isfinite(h_next) && h_next > 1e-300)
+            h_next = s["s2"]
+        end
+        sigma_next = sqrt(h_next)
+        d = Dist([(s["w"][i], 0.0, C[i] * sigma_next) for i in 1:K])
         return Any[d for _ in 1:k], s
     end
     return _leaf

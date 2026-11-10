@@ -6,6 +6,7 @@ function terminal_leaf_ensemble(skaters::Vector; leaf_fn = kk -> crps_leaf(kk),
                                 complexity_penalty::Float64 = 0.0,
                                 depths::Union{Nothing,Vector} = nothing,
                                 prior_log_weights::Union{Nothing,Vector} = nothing,
+                                gate_hook = nothing,
                                 max_components::Int = 20, forget::Float64 = 1.0)
     n = length(skaters)
     @assert n > 0
@@ -46,8 +47,12 @@ function terminal_leaf_ensemble(skaters::Vector; leaf_fn = kk -> crps_leaf(kk),
             end
             push!(q, all_dists[i][1])
         end
-        max_lw = maximum(log_w)
-        w = Float64[exp(lw - max_lw) for lw in log_w]
+        # granger's gate shifts the combining weights for this step only; the
+        # recursion above is untouched. laplace passes no hook.
+        off = gate_hook === nothing ? nothing : gate_hook()
+        lwc = off === nothing ? log_w : Float64[log_w[i] + off[i] for i in eachindex(log_w)]
+        max_lw = maximum(lwc)
+        w = Float64[exp(lw - max_lw) for lw in lwc]
         tot = fsum(w)
 
         leaf_state = state["leaf_state"]

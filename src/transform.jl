@@ -56,20 +56,42 @@ function fractional_difference(d::Float64 = 0.4, window::Int = 50)
         return y_prime, state
     end
     function inverse_k(dists::Vector, state::Dict)
+        # Recovered earlier horizons feed back through the same weights, so each
+        # recovered value carries a row of responses to the future innovations,
+        # built by the same recursion as its mean: Var = sum_i c_{h,i}^2 var_i (#255).
+        H = length(dists)
         buf = copy(state["buffer"]::Vector{Float64})
+        cbuf = Union{Nothing,Vector{Float64}}[nothing for _ in buf]
         result = Any[]
-        for d_in in dists
+        for (hh, d_in) in enumerate(dists)
+            h = hh - 1
             push!(buf, 0.0)
+            push!(cbuf, nothing)
             n = length(buf)
             shift = 0.0
+            coef = zeros(H)
+            coef[h+1] = 1.0
             for j in 1:(min(n, window)-1)
                 shift -= w_fwd[j+1] * buf[n-j]
+                cj = cbuf[n-j]
+                if cj !== nothing
+                    for i in 1:h
+                        coef[i] -= w_fwd[j+1] * cj[i]
+                    end
+                end
             end
             recovered_mean = dist_mean(d_in) + shift
             buf[end] = recovered_mean
-            push!(result, dist_gaussian(recovered_mean, dist_std(d_in)))
+            cbuf[end] = coef
+            total_var = 0.0
+            for i in 1:(h+1)
+                total_var += coef[i] * coef[i] * dist_var(dists[i])
+            end
+            std = total_var > 0 ? sqrt(total_var) : max(dist_std(d_in), 1e-12)
+            push!(result, dist_gaussian(recovered_mean, std))
             if length(buf) > window
                 popfirst!(buf)
+                popfirst!(cbuf)
             end
         end
         return result
@@ -127,8 +149,20 @@ function ema_transform(alpha::Float64 = 0.05)
         return residual, Dict{String,Any}("level" => level)
     end
     function inverse_k(dists::Vector, state::Dict)
+        # Convolve the level's own innovation response into each component:
+        # Var(y_{t+h+1}) = var_h + alpha^2 sum_{i<h} var_i (ETS(A,N,N); #254).
         level = state["level"]
-        return Any[dist_shift(d, level) for d in dists]
+        out = Any[]
+        add = 0.0
+        for d in dists
+            if add > 0.0
+                push!(out, Dist([(w, m + level, sqrt(s * s + add)) for (w, m, s) in d.comps]))
+            else
+                push!(out, dist_shift(d, level))
+            end
+            add += alpha * alpha * dist_var(d)
+        end
+        return out
     end
     return (forward, inverse_k)
 end
@@ -158,7 +192,16 @@ function ou_transform(kappa::Float64 = 0.1, alpha::Float64 = 0.02)
         for (hh, d) in enumerate(dists)
             h = hh  # 1-based horizon matches Python's start=1
             center = m + (phi^h) * (ylast - m)
-            if phi < 1.0 - 1e-9
+            # Var(y_{t+h}) = sum_{i<h} phi^{2(h-1-i)} var_i (#256), as a scale on
+            # this horizon's Dist so the leaf's mixture shape is kept.
+            v_h = dist_var(d)
+            if v_h > 0.0
+                tot = 0.0
+                for i in 0:(h-1)
+                    tot += (phi^(2 * (h - 1 - i))) * dist_var(dists[i+1])
+                end
+                g = sqrt(tot / v_h)
+            elseif phi < 1.0 - 1e-9
                 g = sqrt((1.0 - phi^(2 * h)) / (1.0 - phi * phi))
             else
                 g = sqrt(h)
@@ -199,12 +242,17 @@ function theta(alpha::Float64 = 0.1)
         ses = state["ses"]
         slope = get(state, "slope", 0.0)
         result = Any[]
-        cumsum_var = 0.0
         for (hh, d) in enumerate(dists)
             h = hh - 1
-            cumsum_var += dist_var(d)
             forecast = ses + (h + 1) * slope / 2 + dist_mean(d)
-            std = cumsum_var > 0 ? sqrt(cumsum_var) : max(dist_std(d), 1e-12)
+            # SES response: c_0 = 1, c_j = alpha (#253); the OLS slope's O(1/t)
+            # response is dropped, as in the reference.
+            total_var = 0.0
+            for j in 0:h
+                c = j == 0 ? 1.0 : alpha
+                total_var += c * c * dist_var(dists[h-j+1])
+            end
+            std = total_var > 0 ? sqrt(total_var) : max(dist_std(d), 1e-12)
             push!(result, dist_gaussian(forecast, std))
         end
         return result
@@ -230,15 +278,27 @@ function drift(alpha::Float64 = 0.002, shrinkage::Float64 = 0.001)
     function inverse_k(dists::Vector, state::Dict)
         anchor = state["last"]
         mu = state["mu"]
+        rho = decay + alpha
         result = Any[]
         cumsum_mean = 0.0
-        cumsum_var = 0.0
         for (hh, d) in enumerate(dists)
             h = hh - 1
             cumsum_mean += dist_mean(d)
-            cumsum_var += dist_var(d)
             total_mean = anchor + (h + 1) * mu + cumsum_mean
-            total_std = cumsum_var > 0 ? sqrt(cumsum_var) : max(dist_std(d), 1e-12)
+            # Innovation at t+i+1 reaches y_{t+h+1} directly and through the drift
+            # estimate on each later step: c = 1 + alpha * sum_{m<h-i} rho^m (#257).
+            total_var = 0.0
+            for i in 0:h
+                acc = 0.0
+                f = 1.0
+                for _ in 1:(h-i)
+                    acc += f
+                    f *= rho
+                end
+                c = 1.0 + alpha * acc
+                total_var += c * c * dist_var(dists[i+1])
+            end
+            total_std = total_var > 0 ? sqrt(total_var) : max(dist_std(d), 1e-12)
             push!(result, dist_gaussian(total_mean, total_std))
         end
         return result
@@ -266,12 +326,16 @@ function holt_linear(alpha::Float64 = 0.1, beta::Float64 = 0.05)
         level = state["level"]
         trend = state["trend"]
         result = Any[]
-        cumsum_var = 0.0
         for (hh, d) in enumerate(dists)
             h = hh - 1
-            cumsum_var += dist_var(d)
             forecast = level + (h + 1) * trend + dist_mean(d)
-            std = cumsum_var > 0 ? sqrt(cumsum_var) : max(dist_std(d), 1e-12)
+            # ETS(A,A,N) innovation weights c_0 = 1, c_j = alpha + alpha*beta*j (#242).
+            total_var = 0.0
+            for j in 0:h
+                c = j == 0 ? 1.0 : alpha + alpha * beta * j
+                total_var += c * c * dist_var(dists[h-j+1])
+            end
+            std = total_var > 0 ? sqrt(total_var) : max(dist_std(d), 1e-12)
             push!(result, dist_gaussian(forecast, std))
         end
         return result
@@ -411,25 +475,47 @@ function seasonal_anchor(period::Int; alpha::Float64 = 0.2, weight::Float64 = 0.
         buf = copy(state["buffer"]::Vector{Float64})
         ema = state["ema"]::Vector{Union{Nothing,Float64}}
         n = state["n"]
+        H = length(dists)
         recovered_means = Float64[]
-        recovered_vars = Float64[]
+        # Innovation-response rows for each recovered value and each phase's EMA:
+        # the forward updates a phase's EMA from recovered values too, so an anchor
+        # at h >= period responds through both the naive term (1 - weight) and the
+        # EMA term (weight * alpha) (skaters#258).
+        rec_resp = Vector{Float64}[]
+        ema_resp = [zeros(H) for _ in 1:period]
         result = Any[]
-        for h in 0:(length(dists)-1)
+        for h in 0:(H-1)
             p = ((n + h) % period)
             lag_idx = h - period
             if lag_idx < 0
                 buf_idx = length(buf) - period + h   # 0-based
                 snaive = (0 <= buf_idx < length(buf)) ? buf[buf_idx+1] : buf[end]
-                snaive_var = 0.0
+                sn_resp = nothing
             else
                 snaive = recovered_means[lag_idx+1]
-                snaive_var = recovered_vars[lag_idx+1]
+                sn_resp = rec_resp[lag_idx+1]
             end
-            a_mean = _anchor(ema[p+1], snaive)
-            a_var = ((1.0 - weight)^2) * snaive_var
+            e = ema[p+1]
+            a_mean = _anchor(e, snaive)
+            a_resp = zeros(H)
+            for i in 1:h
+                sn = sn_resp !== nothing ? sn_resp[i] : 0.0
+                a_resp[i] = e !== nothing ? (weight * ema_resp[p+1][i] + (1.0 - weight) * sn) : sn
+            end
+            a_var = 0.0
+            for i in 1:h
+                a_var += a_resp[i] * a_resp[i] * dist_var(dists[i])
+            end
+            r = copy(a_resp)
+            r[h+1] = 1.0
             d = dists[h+1]
             push!(recovered_means, dist_mean(d) + a_mean)
-            push!(recovered_vars, dist_var(d) + a_var)
+            push!(rec_resp, r)
+            if e === nothing
+                ema_resp[p+1] = copy(r)
+            else
+                ema_resp[p+1] = [(1.0 - alpha) * ema_resp[p+1][i] + alpha * r[i] for i in 1:H]
+            end
             if a_var > 0.0
                 push!(result, Dist([(w, m + a_mean, sqrt(s * s + a_var))
                                     for (w, m, s) in d.comps]))
@@ -571,18 +657,25 @@ function _ar_spectral_radius(phi::Vector{Float64})
         end
         return hypot(a / 2.0, sqrt(-disc) / 2.0)   # |complex root|
     end
-    v = ones(Float64, p)
-    rho = 0.0
-    for _ in 1:60
-        nv = vcat(sum(phi[j] * v[j] for j in 1:p), v[1:(p-1)])
-        m = maximum(abs.(nv))
-        if m == 0
-            m = 1.0
+    # Power iteration from one seed can miss the dominant eigenvalue when the
+    # seed is (near-)orthogonal to it (skaters#232: phi = [3,-2,0,0,0] seeded at
+    # all-ones reads 1, true radius 2). Two seeds, take the max.
+    best = 0.0
+    for seed in (ones(Float64, p), Float64[(-1.0)^i for i in 0:(p-1)])
+        v = copy(seed)
+        rho = 0.0
+        for _ in 1:60
+            nv = vcat(fsum(phi[j] * v[j] for j in 1:p), v[1:(p-1)])
+            m = maximum(abs.(nv))
+            if m == 0
+                m = 1.0
+            end
+            v = nv ./ m
+            rho = m
         end
-        v = nv ./ m
-        rho = m
+        best = max(best, rho)
     end
-    return rho
+    return best
 end
 
 # Damp AR coefficients into the stationary region for forecasting. An online fit
@@ -614,22 +707,31 @@ function ar(order::Int = 2; lam::Float64 = 0.99, ridge::Float64 = 1.0, decay::Fl
     function forward(y::Float64, state::Union{Nothing,Dict})
         if state === nothing
             state = Dict{String,Any}("buffer" => Float64[], "phi" => zeros(Float64, p),
-                "P" => _init_P(), "n" => 0)
+                "phi_used" => zeros(Float64, p), "P" => _init_P(), "n" => 0)
         end
         buf = state["buffer"]::Vector{Float64}
         phi = state["phi"]::Vector{Float64}
+        if !haskey(state, "phi_used")
+            # a state from before skaters#232/#235 carries only the raw coefficients
+            state["phi_used"] = _ar_stationary(copy(phi))
+        end
         state["n"] += 1
         if length(buf) >= p
             x = Float64[buf[length(buf)-i] for i in 0:(p-1)]
-            prediction = fsum(phi[i+1] * x[i+1] for i in 0:(p-1))
+            # the residual EMITTED (and inverse_k's forecast) uses the stationarity-
+            # projected coefficients from the end of the previous tick (skaters#232);
+            # the RLS keeps fitting the raw problem with its own prediction error
+            phi_used = state["phi_used"]::Vector{Float64}
+            prediction = fsum(phi_used[i+1] * x[i+1] for i in 0:(p-1))
             residual = y - prediction
+            raw_residual = y - fsum(phi[i+1] * x[i+1] for i in 0:(p-1))
             P = state["P"]::Vector{Float64}
             Px = _mat_vec(P, x, p)
             denom = lam + _dot(x, Px, p)
             if abs(denom) > 1e-15
                 K = [px / denom for px in Px]
                 for i in 0:(p-1)
-                    phi[i+1] += K[i+1] * residual
+                    phi[i+1] += K[i+1] * raw_residual
                 end
                 for i in 0:(p-1)
                     for j in 0:(p-1)
@@ -640,6 +742,8 @@ function ar(order::Int = 2; lam::Float64 = 0.99, ridge::Float64 = 1.0, decay::Fl
                     copyto!(P, _init_P())
                 end
             end
+            # re-project after every update so the next emission and inverse_k agree
+            state["phi_used"] = _ar_stationary(copy(phi))
         else
             residual = y
         end
@@ -654,7 +758,8 @@ function ar(order::Int = 2; lam::Float64 = 0.99, ridge::Float64 = 1.0, decay::Fl
         # Forecast with stationarity-constrained coefficients: a non-stationary
         # online fit has no convergent multi-step forecast. The one-step fit in
         # state is left intact; only the extrapolation is kept well-posed.
-        phi = _ar_stationary(state["phi"]::Vector{Float64})
+        phi = haskey(state, "phi_used") ? (state["phi_used"]::Vector{Float64}) :
+              _ar_stationary(state["phi"]::Vector{Float64})
         H = length(dists)
         # Impulse responses psi_0..psi_{H-1}: psi_0 = 1, psi_i = sum_j phi_j psi_{i-j}.
         # The h-step variance is sigma^2 * sum_{i<=h} psi_i^2, NOT a recursion on
@@ -662,17 +767,10 @@ function ar(order::Int = 2; lam::Float64 = 0.99, ridge::Float64 = 1.0, decay::Fl
         # summing phi_j^2 * var_{h-j} both mis-weights and double counts it.
         psi = Float64[1.0]
         for i in 1:(H-1)
-            s = 0.0
-            for j in 0:(p-1)
-                if i - 1 - j >= 0
-                    s += phi[j+1] * psi[i-j]
-                end
-            end
-            push!(psi, s)
+            push!(psi, fsum(Float64[phi[j+1] * psi[i-j] for j in 0:(p-1) if i - 1 - j >= 0]))
         end
         recovered_means = Float64[]
         result = Any[]
-        cum_psi2 = 0.0
         for h in 0:(H-1)
             ar_mean = 0.0
             for j in 0:(p-1)
@@ -690,8 +788,13 @@ function ar(order::Int = 2; lam::Float64 = 0.99, ridge::Float64 = 1.0, decay::Fl
             end
             d = dists[h+1]
             total_mean = dist_mean(d) + ar_mean
-            cum_psi2 += psi[h+1] * psi[h+1]
-            total_var = cum_psi2 * dist_var(d)
+            # Var(y_{t+h+1}) = sum_i psi_{h-i}^2 var_i: each future innovation
+            # enters with its own variance (skaters#245); plain accumulation in
+            # the reference's order.
+            total_var = 0.0
+            for i in 0:h
+                total_var += psi[h-i+1] * psi[h-i+1] * dist_var(dists[i+1])
+            end
             total_std = total_var > 0 ? sqrt(total_var) : max(dist_std(d), 1e-12)
             push!(recovered_means, total_mean)
             push!(result, dist_gaussian(total_mean, total_std))
@@ -739,22 +842,32 @@ function grouped_ar(max_lag::Int = 16; lam::Float64 = 0.99, ridge::Float64 = 1.0
     function forward(y::Float64, state::Union{Nothing,Dict})
         if state === nothing
             state = Dict{String,Any}("buffer" => Float64[], "theta" => zeros(Float64, n_groups),
-                "P" => _eye(n_groups, ridge), "n" => 0)
+                "phi_used" => zeros(Float64, max_lag), "P" => _eye(n_groups, ridge), "n" => 0)
         end
         buf = state["buffer"]::Vector{Float64}
         theta = state["theta"]::Vector{Float64}
+        if !haskey(state, "phi_used")
+            # a state from before skaters#235: the projected per-lag set follows from theta
+            state["phi_used"] = _ar_stationary(Float64[theta[groups[j+1]+1] for j in 0:(max_lag-1)])
+        end
         state["n"] += 1
         if length(buf) >= max_lag
             x = _group_regressor(buf, groups, n_groups, max_lag)
-            prediction = fsum(theta[g+1] * x[g+1] for g in 0:(n_groups-1))
+            # Emitted residual uses the previous tick's stationarity-projected,
+            # per-lag coefficients (skaters#232/#235), so forward's emission and
+            # inverse_k's reconstruction agree; the RLS keeps fitting the raw
+            # group-level problem with its own prediction error.
+            phi_used = state["phi_used"]::Vector{Float64}
+            prediction = fsum(phi_used[j+1] * buf[length(buf)-j] for j in 0:(max_lag-1))
             residual = y - prediction
+            raw_residual = y - fsum(theta[g+1] * x[g+1] for g in 0:(n_groups-1))
             P = state["P"]::Vector{Float64}
             Px = _mat_vec(P, x, n_groups)
             denom = lam + _dot(x, Px, n_groups)
             if abs(denom) > 1e-15
                 K = [px / denom for px in Px]
                 for g in 0:(n_groups-1)
-                    theta[g+1] += K[g+1] * residual
+                    theta[g+1] += K[g+1] * raw_residual
                 end
                 for i in 0:(n_groups-1)
                     for j in 0:(n_groups-1)
@@ -765,6 +878,7 @@ function grouped_ar(max_lag::Int = 16; lam::Float64 = 0.99, ridge::Float64 = 1.0
                     copyto!(P, _eye(n_groups, ridge))
                 end
             end
+            state["phi_used"] = _ar_stationary(Float64[theta[groups[j+1]+1] for j in 0:(max_lag-1)])
         else
             residual = y
         end
@@ -776,25 +890,18 @@ function grouped_ar(max_lag::Int = 16; lam::Float64 = 0.99, ridge::Float64 = 1.0
     end
     function inverse_k(dists::Vector, state::Dict)
         buf = copy(state["buffer"]::Vector{Float64})
-        theta = state["theta"]::Vector{Float64}
-        # Expand group coefficients to per-lag, then constrain to stationarity
-        # for a well-posed forecast (same as ar(); grouped AR is AR-family).
-        phi = _ar_stationary(Float64[theta[groups[j+1]+1] for j in 0:(max_lag-1)])
+        # Same coefficients forward() already emitted residuals under
+        # (skaters#232), except for a pre-#235 state that has no cache yet.
+        phi = haskey(state, "phi_used") ? (state["phi_used"]::Vector{Float64}) :
+              _ar_stationary(Float64[state["theta"][groups[j+1]+1] for j in 0:(max_lag-1)])
         H = length(dists)
         # Impulse responses, as in ar(): h-step variance is sigma^2 * sum psi_i^2.
         psi = Float64[1.0]
         for i in 1:(H-1)
-            s = 0.0
-            for j in 0:(max_lag-1)
-                if i - 1 - j >= 0
-                    s += phi[j+1] * psi[i-j]
-                end
-            end
-            push!(psi, s)
+            push!(psi, fsum(Float64[phi[j+1] * psi[i-j] for j in 0:(max_lag-1) if i - 1 - j >= 0]))
         end
         recovered_means = Float64[]
         result = Any[]
-        cum_psi2 = 0.0
         for h in 0:(H-1)
             ar_mean = 0.0
             for j in 0:(max_lag-1)
@@ -812,8 +919,13 @@ function grouped_ar(max_lag::Int = 16; lam::Float64 = 0.99, ridge::Float64 = 1.0
             end
             d = dists[h+1]
             total_mean = dist_mean(d) + ar_mean
-            cum_psi2 += psi[h+1] * psi[h+1]
-            total_var = cum_psi2 * dist_var(d)
+            # Var(y_{t+h+1}) = sum_i psi_{h-i}^2 var_i: each future innovation
+            # enters with its own variance (skaters#245); plain accumulation in
+            # the reference's order.
+            total_var = 0.0
+            for i in 0:h
+                total_var += psi[h-i+1] * psi[h-i+1] * dist_var(dists[i+1])
+            end
             total_std = total_var > 0 ? sqrt(total_var) : max(dist_std(d), 1e-12)
             push!(recovered_means, total_mean)
             push!(result, dist_gaussian(total_mean, total_std))
