@@ -190,7 +190,7 @@ function dist_pdf(d::SplicedDist, x::Float64)::Float64
     return lp < 700.0 ? exp(lp) : Inf
 end
 
-function dist_quantile(d::SplicedDist, p::Float64; tol::Float64 = 1e-9, max_iter::Int = 100)::Float64
+function dist_quantile(d::SplicedDist, p::Float64; tol::Float64 = 1e-9, max_iter::Int = 2100)::Float64
     @assert 0 < p < 1
     if p < d.zeta_lo
         z = d.t_lo - _gpd_isf(p / d.zeta_lo, d.g_lo, d.s_lo)
