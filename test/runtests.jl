@@ -1,7 +1,9 @@
-# Standard Pkg.test entry. Runs the three gates in order: parity (the
-# 1e-6 vector gate), robustness (adversarial streams), contract
-# (determinism and checkpoint-resume). Each suite also runs standalone:
+# Standard Pkg.test entry. Runs the four gates in order: parity (the
+# 1e-6 vector gate), quantile contract (the shared cross-language inverse-CDF
+# cases), robustness (adversarial streams), contract (determinism and
+# checkpoint-resume). Each suite also runs standalone:
 #   julia --project=. test/parity.jl
+#   julia --project=. test/quantile_contract.jl
 #   julia --project=. test/robustness.jl
 #   julia --project=. test/contract.jl
 # Every suite raises (or exits nonzero) on any violation, which fails
@@ -9,6 +11,10 @@
 
 module ParitySuite
 include("parity.jl")
+end
+
+module QuantileContractSuite
+include("quantile_contract.jl")
 end
 
 module RobustnessSuite
@@ -19,4 +25,4 @@ module ContractSuite
 include("contract.jl")
 end
 
-println("ALL SUITES OK (parity, robustness, contract)")
+println("ALL SUITES OK (parity, quantile contract, robustness, contract)")

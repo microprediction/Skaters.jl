@@ -123,18 +123,40 @@ function dist_std(d::Dist)::Float64
     return v > 0 ? sqrt(v) : 0.0
 end
 
-function dist_quantile(d::Dist, p::Float64; tol::Float64 = 1e-9, max_iter::Int = 100)::Float64
+# Inverse CDF with a scale-relative x tolerance below unit scale (mirror of
+# Dist.quantile in the reference; see parity/QUANTILE_CONTRACT.md). Ordinary
+# tolerance exits retain the historical midpoint. At float resolution the
+# historical midpoint rounding is retained when the absolute tolerance is at
+# most twice the float spacing and unresolved components have no effect on the
+# endpoint CDFs; otherwise hi is returned. An atom in the final tolerance
+# bracket is returned exactly when p lies inside its jump. The default budget
+# spans binary64's exponent range; a smaller explicit max_iter can still return
+# an unconverged midpoint. The bracket must be finite.
+function dist_quantile(d::Dist, p::Float64; tol::Float64 = 1e-9, max_iter::Int = 2100)::Float64
     0 < p < 1 || throw(ArgumentError("quantile needs 0 < p < 1, got $p"))
     mu = dist_mean(d)
     sigma = sqrt(dist_var(d))
+    isfinite(sigma) || error("quantile needs a finite mixture variance")
+    scale = Inf
+    for (w, _, s) in d.comps
+        if w > 0.0 && s > 0.0 && s < scale
+            scale = s
+        end
+    end
+    if scale == Inf
+        scale = 1.0
+    end
+    x_tol = tol * min(1.0, scale)
     lo = mu - 8 * sigma
     hi = mu + 8 * sigma
-    # Expand the bracket geometrically until it contains p (skaters 21f1de5); it
-    # never fires when mu +- 8 sigma already sufficed, so results are unchanged.
-    width = max(16 * sigma, 1e-12)
+    # Preserve the geometric expansion. A location-scaled seed also moves a
+    # collapsed bracket at large-magnitude atoms. Strictly below p avoids
+    # excluding an earlier solution on a CDF plateau.
+    seed = max(16 * sigma, 1e-12 * max(1.0, abs(mu)))
+    width = seed
     ok = false
     for _ in 1:120
-        if dist_cdf(d, lo) <= p
+        if dist_cdf(d, lo) < p
             ok = true
             break
         end
@@ -142,7 +164,7 @@ function dist_quantile(d::Dist, p::Float64; tol::Float64 = 1e-9, max_iter::Int =
         width *= 2.0
     end
     ok || error("could not bracket quantile p=$p from below")
-    width = max(16 * sigma, 1e-12)
+    width = seed
     ok = false
     for _ in 1:120
         if dist_cdf(d, hi) >= p
@@ -153,18 +175,62 @@ function dist_quantile(d::Dist, p::Float64; tol::Float64 = 1e-9, max_iter::Int =
         width *= 2.0
     end
     ok || error("could not bracket quantile p=$p from above")
+    (isfinite(lo) && isfinite(hi)) || error("quantile needs a finite search bracket")
     for _ in 1:max_iter
         mid = 0.5 * (lo + hi)
+        if !isfinite(mid)
+            mid = 0.5 * lo + 0.5 * hi
+        end
+        if !(lo < mid < hi)
+            # The historical loop may have stopped on this adjacent pair when
+            # its width first fell below tol. Preserve that rounded midpoint
+            # only if unresolved components do not change either endpoint CDF
+            # when moved across the pair. No weight cutoff is used.
+            gap = hi - lo
+            if 0 < tol <= 2 * gap
+                lower = 0.0
+                upper = 0.0
+                swapped_lower = 0.0
+                swapped_upper = 0.0
+                for (w, m, s) in d.comps
+                    cl = w * gaussian_cdf(lo, m, s)
+                    cu = w * gaussian_cdf(hi, m, s)
+                    lower += cl
+                    upper += cu
+                    unresolved = w > 0.0 && s <= gap
+                    swapped_lower += unresolved ? cu : cl
+                    swapped_upper += unresolved ? cl : cu
+                end
+                if swapped_lower == lower && swapped_upper == upper
+                    return mid
+                end
+            end
+            return hi
+        end
         if dist_cdf(d, mid) < p
             lo = mid
         else
             hi = mid
         end
-        if hi - lo < tol
+        if hi - lo < x_tol
+            # A midpoint just below an atom has the wrong CDF even if its x
+            # error is tiny. Snap only when p is inside the atom's jump.
+            for (w, m, s) in d.comps
+                if w > 0.0 && s == 0.0 && lo <= m <= hi
+                    left = 0.0
+                    for (wi, mi, si) in d.comps
+                        left += wi * (si == 0.0 ? (mi < m ? 1.0 : 0.0) : gaussian_cdf(m, mi, si))
+                    end
+                    if left < p <= dist_cdf(d, m)
+                        return m
+                    end
+                end
+            end
             break
         end
     end
-    return 0.5 * (lo + hi)
+    mid = 0.5 * (lo + hi)
+    return isfinite(mid) ? mid : 0.5 * lo + 0.5 * hi
 end
 
 # --- Transform support ---

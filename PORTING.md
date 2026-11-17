@@ -23,11 +23,23 @@ Current status: 56 scenarios plus the periodicity and covariance blocks,
 105798 probe values, PARITY OK. This is the same value count the R port
 reached, i.e. full library coverage.
 
-## The other two gates
+## The other three gates
 
-Beyond parity, two more suites run (all three together via `Pkg.test()`
+Beyond parity, three more suites run (all four together via `Pkg.test()`
 or `julia --project=. test/runtests.jl`):
 
+- `test/quantile_contract.jl`: the shared cross-language inverse-CDF
+  contract. `parity/quantile_contract.json` is copied verbatim from the
+  reference (its `parity/QUANTILE_CONTRACT.md` states the contract in
+  words) and holds 64 cases that the Python, JavaScript and Rust runners
+  also execute: `expected`/`atol` goldens, `lower`/`upper` intervals and
+  `cdf_tol` round-trips. The fixture has one tolerance key, `atol`, and
+  this runner uses it unchanged. The small extra assertions of the Python
+  runner are mirrored too: tiny spread preserved, `max_iter` of 0 and 1,
+  `tol` of 0 and -1, explicit failure on variance overflow. The
+  reference's unit-scale CDF call count (36) is pinned through the budget
+  instead of a counting subclass: 34 bisections reproduce the default
+  answer at p = 0.9 and 33 do not.
 - `test/robustness.jl`: adversarial streams through `laplace(1)`:
   constant series, lattice/repeats, a 1e9 monster spike with a
   post-recovery alarm-rate assertion (< 6% at a ~1e-2 two-sided
@@ -117,14 +129,20 @@ suite's `deepeq` does exactly that.
 This port is faithful to skaters as of the pinned commit. To refresh:
 
 1. In the Python repo: `PYTHONPATH=src python parity/gen_vectors.py`.
-2. Copy `parity/vectors.json` here as `parity/vectors.json`.
+2. Copy `parity/vectors.json` here as `parity/vectors.json`, and
+   `parity/quantile_contract.json` likewise.
 3. Run the gate. Port whatever new or changed module makes it green.
 4. Update the provenance commit below.
 
 ## Provenance
 
-`parity/vectors.json` is copied from the reference worktree at commit
-`632831e510d662d752d3207258e23a6c51db59a5` (its `parity/vectors.json`).
+`parity/vectors.json` and `parity/quantile_contract.json` are copied from
+the reference worktree at commit
+`38ddfa9305d9d9ce43a82951e0c3e18708ee74b6` (its `parity/vectors.json`,
+regenerated there, and its `parity/quantile_contract.json`). That commit
+carries the scale-relative `Dist.quantile` and the 2100 default budget,
+mirrored here in `dist_quantile(::Dist)` and forwarded by
+`dist_quantile(::SplicedDist)`.
 The robustness and contract suites mirror the R port
 (`skaters-r/tests/robustness.R`, `tests/contract.R`) and the Rust crate
 (`rust/tests/robustness.rs`), which in turn mirror the reference repo's
