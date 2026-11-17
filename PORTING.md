@@ -138,7 +138,7 @@ This port is faithful to skaters as of the pinned commit. To refresh:
 
 `parity/vectors.json` and `parity/quantile_contract.json` are copied from
 the reference worktree at commit
-`f2b0c975e2a7cd2ec3f8baa71f9bf62f5623892c` (its `parity/vectors.json`,
+`38ddfa9305d9d9ce43a82951e0c3e18708ee74b6` (its `parity/vectors.json`,
 regenerated there, and its `parity/quantile_contract.json`). That commit
 carries the scale-relative `Dist.quantile` and the 2100 default budget,
 mirrored here in `dist_quantile(::Dist)` and forwarded by
