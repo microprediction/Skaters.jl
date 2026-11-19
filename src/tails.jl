@@ -153,6 +153,39 @@ end
 
 dist_body(d::SplicedDist) = d.body
 
+# The splice lives in the body's PIT space, so an affine map moves only the
+# body. A negative multiplier reverses the PIT: the tails swap and the
+# thresholds negate. The constructor recomputes _c, _plo, _pup and resets the
+# quantile grid (skaters #358).
+function dist_affine(d::SplicedDist, a::Float64, b::Float64)
+    a == 0 && throw(ArgumentError("affine multiplier must be nonzero"))
+    body = dist_affine(d.body, a, b)
+    if a > 0
+        return SplicedDist(body, d.t_lo, d.t_up, d.zeta_lo, d.zeta_up,
+                           d.g_lo, d.s_lo, d.g_up, d.s_up)
+    end
+    return SplicedDist(body, -d.t_up, -d.t_lo, d.zeta_up, d.zeta_lo,
+                       d.g_up, d.s_up, d.g_lo, d.s_lo)
+end
+
+# shift and scale delegate to the body the same way, so every transform that
+# moves the predictive (ema_transform, ou_transform, seasonal_difference,
+# seasonal_anchor) also works once the splice is live.
+dist_shift(d::SplicedDist, delta::Float64) =
+    SplicedDist(dist_shift(d.body, delta), d.t_lo, d.t_up, d.zeta_lo, d.zeta_up,
+                d.g_lo, d.s_lo, d.g_up, d.s_up)
+
+function dist_scale(d::SplicedDist, factor::Float64)
+    factor == 0 && throw(ArgumentError("scale factor must be nonzero"))
+    body = dist_scale(d.body, factor)
+    if factor > 0
+        return SplicedDist(body, d.t_lo, d.t_up, d.zeta_lo, d.zeta_up,
+                           d.g_lo, d.s_lo, d.g_up, d.s_up)
+    end
+    return SplicedDist(body, -d.t_up, -d.t_lo, d.zeta_up, d.zeta_lo,
+                       d.g_up, d.s_up, d.g_lo, d.s_lo)
+end
+
 function _z(d::SplicedDist, x::Float64)::Float64
     u = min(max(dist_cdf(d.body, x), _TEPS), 1.0 - _TEPS)
     return _phi_inv(u)
