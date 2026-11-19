@@ -65,7 +65,7 @@ function sticky(base; k::Int = 1, propensity_alpha::Float64 = 0.05,
             mu = dist_mean(d)
             delta = P * (mu - atom_mean) / pc
             comps = NTuple{3,Float64}[(P * (a[2] / sw), a[1], spike_std) for a in atoms]
-            for (w, m, s) in d.comps
+            for (w, m, s) in _need_components(d)
                 push!(comps, (pc * w, m + delta, s))
             end
             push!(out, Dist(comps))

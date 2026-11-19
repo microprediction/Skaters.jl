@@ -1,17 +1,25 @@
 # Exact pushforward of a predictive through a monotone coordinate map.
-# Port of the parts of skaters/pushforward.py that the transform inverses use:
-# a z-space predictive, a strictly increasing (ys, zs) table of the map, and
-# the analytic inverse y = inv_fn(z). Queries go through the change of
-# variables
+# Port of skaters/pushforward.py.
+#
+# The component-wise delta method used by the nonlinear transform inverses
+# (yeo_johnson, power_transform) maps each mixture component to
+# N(inv(m), s * dinv(m)). It cannot carry the skew of the coordinate change,
+# which lives in the curvature of the map within a component's width.
+# PushforwardDist is the exact treatment: keep the inner predictive in the
+# transformed z-coordinate and answer queries through the change of variables
 #
 #     F_Y(y)      = F_Z(z(y))
 #     log p_Y(y)  = log p_Z(z(y)) + log dz/dy
 #     Q_Y(p)      = y(Q_Z(p))
 #
-# The reference's analytic-forward options (fwd_fn, log_jacobian_fn,
-# component_moments_fn, scaled_inv_fn) are not ported; nothing here builds one.
+# The map can be supplied analytically or represented by a strictly
+# increasing table. Consumers that need mixture components (dist_combine,
+# sticky, a further component-reading transform) read _components, which maps
+# each inner Gaussian by moment matching. An inner without Gaussian components
+# gets a single Gaussian with moments estimated on a quantile grid.
 
-# 7-point Gauss-Hermite nodes and weights (physicists'), for E[g(Z)], Z ~ N(0,1).
+# 7-point Gauss-Hermite nodes and weights (physicists'), for E[g(Z)], Z ~ N(0,1):
+# E[g(Z)] ~= sum w_i/sqrt(pi) * g(sqrt(2) x_i).
 const _GH7 = (
     (-2.6519613568352334, 9.717812450995192e-04),
     (-1.6735516287674714, 5.451558281912703e-02),
@@ -30,6 +38,9 @@ function _quantile_rule(n::Int)
 end
 
 const _QUANTILE_RULE = _quantile_rule(257)
+
+# Python's math.exp raises on overflow; the reference maps that to inf.
+_exp_or_inf(x::Float64) = exp(x)
 
 # Piecewise-linear with linear extrapolation from the end segments.
 function interp_table(x::Float64, xs::Vector{Float64}, fs::Vector{Float64})::Float64
@@ -66,27 +77,63 @@ function table_from_map(inv_fn, z_lo::Float64, z_hi::Float64, nodes::Int = 400)
     return ys, zs
 end
 
+# A z-space predictive pushed through a monotone y <-> z map. Supply a table
+# (ys, zs) or an analytic map with inv_fn, fwd_fn and log_jacobian_fn
+# (log(dz/dy), evaluated at z). With a table and an optional inverse, the
+# Jacobian is estimated by finite differences. component_moments_fn
+# optionally gives the mapped mean and standard deviation of a Gaussian
+# component. scaled_inv_fn(z, weight) evaluates the inverse times a positive
+# weight, useful when the inverse overflows.
 mutable struct PushforwardDist <: AbstractDist
     inner::Any
-    ys::Vector{Float64}
-    zs::Vector{Float64}
+    ys::Union{Nothing,Vector{Float64}}
+    zs::Union{Nothing,Vector{Float64}}
     inv_fn::Any
+    fwd_fn::Any
+    log_jacobian_fn::Any
+    component_moments_fn::Any
+    scaled_inv_fn::Any
     _comps::Union{Nothing,Vector{NTuple{3,Float64}}}
     _grid::Union{Nothing,Vector{Float64}}
-    PushforwardDist(inner, ys, zs, inv_fn) = new(inner, ys, zs, inv_fn, nothing, nothing)
 end
 
-# No clamp (skaters#221): the table extrapolates linearly past its ends.
-_pf_z(d::PushforwardDist, y::Float64) = interp_table(y, d.ys, d.zs)
-_pf_y(d::PushforwardDist, z::Float64) = d.inv_fn(z)
+PushforwardDist(inner, ys = nothing, zs = nothing; inv_fn = nothing, fwd_fn = nothing,
+                log_jacobian_fn = nothing, component_moments_fn = nothing,
+                scaled_inv_fn = nothing) =
+    PushforwardDist(inner, ys, zs, inv_fn, fwd_fn, log_jacobian_fn,
+                    component_moments_fn, scaled_inv_fn, nothing, nothing)
 
-# dz/dy at y: central difference of the exact inverse, segment secant otherwise.
+# --- the map ---
+
+# No clamp (skaters#221): interp_table already extrapolates linearly past
+# the table ends, which is the map's actual, exact behavior out there.
+function _pf_z(d::PushforwardDist, y::Float64)::Float64
+    d.fwd_fn !== nothing && return d.fwd_fn(y)
+    return interp_table(y, d.ys, d.zs)
+end
+
+function _pf_y(d::PushforwardDist, z::Float64)::Float64
+    d.inv_fn !== nothing && return d.inv_fn(z)
+    return interp_table(z, d.zs, d.ys)
+end
+
+# dz/dy at y (central difference of the exact map when available, segment
+# secant otherwise; end segments extend beyond the table).
 function _pf_slope(d::PushforwardDist, y::Float64)::Float64
-    z = _pf_z(d, y)
-    h = 1e-5 * (1.0 + abs(z))
-    dy = d.inv_fn(z + h) - d.inv_fn(z - h)
-    if dy > 0.0
-        return 2.0 * h / dy
+    if d.fwd_fn !== nothing
+        h = 1e-5 * (1.0 + abs(y))
+        za, zb = d.fwd_fn(y + h), d.fwd_fn(y - h)
+        if isfinite(za) && isfinite(zb) && za > zb
+            return (za - zb) / (2.0 * h)
+        end
+    end
+    if d.inv_fn !== nothing
+        z = _pf_z(d, y)
+        h = 1e-5 * (1.0 + abs(z))
+        dy = d.inv_fn(z + h) - d.inv_fn(z - h)
+        if dy > 0.0
+            return 2.0 * h / dy
+        end
     end
     ys, zs = d.ys, d.zs
     i = searchsortedfirst(ys, y) - 1
@@ -94,17 +141,19 @@ function _pf_slope(d::PushforwardDist, y::Float64)::Float64
     return (zs[i+1] - zs[i]) / (ys[i+1] - ys[i])
 end
 
+# --- queries (exact) ---
+
 function dist_logpdf(d::PushforwardDist, x::Float64)::Float64
     z = _pf_z(d, x)
-    isinf(z) && return -Inf
+    isinf(z) && return -Inf                 # x on or past a bound of the map
     isnan(z) && return NaN
+    if d.log_jacobian_fn !== nothing
+        return dist_logpdf(d.inner, z) + d.log_jacobian_fn(z)
+    end
     return dist_logpdf(d.inner, z) + log(_pf_slope(d, x))
 end
 
-function dist_pdf(d::PushforwardDist, x::Float64)::Float64
-    lp = dist_logpdf(d, x)
-    return lp < 700.0 ? exp(lp) : Inf
-end
+dist_pdf(d::PushforwardDist, x::Float64)::Float64 = _exp_or_inf(dist_logpdf(d, x))
 
 function dist_cdf(d::PushforwardDist, x::Float64)::Float64
     z = _pf_z(d, x)
@@ -116,9 +165,12 @@ end
 dist_quantile(d::PushforwardDist, p::Float64; tol::Float64 = 1e-9, max_iter::Int = 2100)::Float64 =
     _pf_y(d, dist_quantile(d.inner, p; tol = tol, max_iter = max_iter))
 
-# CRPS by trapezoid quadrature over the table in z-space.
+# CRPS by quadrature over quantiles or over the table in z-space.
 function dist_crps(d::PushforwardDist, x::Float64)::Float64
     isfinite(x) || return abs(x)
+    if d.fwd_fn !== nothing || d.zs === nothing
+        return _pf_crps_from_quantiles(d, x)
+    end
     zstar = _pf_z(d, x)
     zs = d.zs
     s_lo = 1.0 / _pf_slope(d, d.ys[1])
@@ -162,15 +214,59 @@ function dist_crps(d::PushforwardDist, x::Float64)::Float64
     return total
 end
 
-# Mapped quantiles on the quantile rule, cached.
-function _qgrid(d::PushforwardDist)::Vector{Float64}
-    if d._grid === nothing
-        d._grid = Float64[dist_quantile(d, p) for (p, _) in _QUANTILE_RULE]
+# Integrate twice the pinball loss, including observations outside the
+# support. Apply the weights first if the unweighted difference overflows.
+function _pf_crps_from_quantiles(d::PushforwardDist, x::Float64)::Float64
+    total = 0.0
+    for (q, (p, w)) in zip(_qgrid(d), _QUANTILE_RULE)
+        weight = 2.0 * w * (q >= x ? (1.0 - p) : p)
+        gap = abs(q - x)
+        if isfinite(gap)
+            total += weight * gap
+        else
+            weighted_q = weight * q
+            if isinf(q) && d.scaled_inv_fn !== nothing
+                weighted_q = d.scaled_inv_fn(dist_quantile(d.inner, p), weight)
+            end
+            total += abs(weighted_q - weight * x)
+        end
     end
-    return d._grid
+    return total
 end
 
-# Gaussian moments of a mapped component, centered Gauss-Hermite (skaters#225).
+# --- Dist-compatibility shim ---
+
+# Moment-matched mixture components in y-space (lazy, cached). For a spliced
+# or already transformed inner, one Gaussian fitted to its mapped quantiles.
+# This compatibility approximation can lose a support bound when a caller
+# uses it to build a plain Dist.
+function _pf_components(d::PushforwardDist)::Vector{NTuple{3,Float64}}
+    if d._comps === nothing
+        inner_comps = d.inner isa PushforwardDist ? nothing : _components(d.inner)
+        if inner_comps === nothing
+            q = _qgrid(d)
+            mu = fsum(w * y for (y, (_, w)) in zip(q, _QUANTILE_RULE))
+            sd = !isfinite(mu) ? Inf :
+                 hypot((sqrt(w) * (y - mu) for (y, (_, w)) in zip(q, _QUANTILE_RULE))...)
+            d._comps = NTuple{3,Float64}[(1.0, mu, sd)]
+        else
+            comps = NTuple{3,Float64}[]
+            for (w, m, s) in inner_comps
+                w > 0.0 || continue
+                mu, sd = d.component_moments_fn !== nothing ? d.component_moments_fn(m, s) :
+                         _pf_gaussian_moments(d, m, s)
+                push!(comps, (w, mu, sd))
+            end
+            d._comps = comps
+        end
+    end
+    return d._comps
+end
+
+_components(d::PushforwardDist) = _pf_components(d)
+
+# Centered quadrature (skaters#225). hypot also keeps std representable when
+# the corresponding variance is too large or small for a float.
 function _pf_gaussian_moments(d::PushforwardDist, m::Float64, s::Float64)
     node_ys = [_pf_y(d, m + s * SQRT2 * x) for (x, _) in _GH7]
     mu = fsum((w / _SQRTPI) * y for (y, (_, w)) in zip(node_ys, _GH7))
@@ -179,23 +275,12 @@ function _pf_gaussian_moments(d::PushforwardDist, m::Float64, s::Float64)
     return mu, max(sd, 1e-12)
 end
 
-# Moment-matched mixture components in y-space (lazy, cached). An inner
-# without Gaussian components (SplicedDist, PushforwardDist) gets one Gaussian
-# fitted to its mapped quantiles.
-function _pf_components(d::PushforwardDist)::Vector{NTuple{3,Float64}}
-    if d._comps === nothing
-        if d.inner isa Dist
-            d._comps = NTuple{3,Float64}[(w, _pf_gaussian_moments(d, m, s)...)
-                                         for (w, m, s) in d.inner.comps if w > 0.0]
-        else
-            q = _qgrid(d)
-            mu = fsum(w * y for (y, (_, w)) in zip(q, _QUANTILE_RULE))
-            sd = !isfinite(mu) ? Inf :
-                 hypot((sqrt(w) * (y - mu) for (y, (_, w)) in zip(q, _QUANTILE_RULE))...)
-            d._comps = NTuple{3,Float64}[(1.0, mu, sd)]
-        end
+# Mapped quantiles used by numerical moments and CRPS, cached.
+function _qgrid(d::PushforwardDist)::Vector{Float64}
+    if d._grid === nothing
+        d._grid = Float64[dist_quantile(d, p) for (p, _) in _QUANTILE_RULE]
     end
-    return d._comps
+    return d._grid
 end
 
 dist_mean(d::PushforwardDist)::Float64 = fsum(w * m for (w, m, _) in _pf_components(d))
@@ -213,13 +298,4 @@ function dist_var(d::PushforwardDist)::Float64
     return sd * sd
 end
 
-# The exact pushforward of a predictive with no mixture to read (laplace's
-# tail-spliced SplicedDist) through the monotone map inv_fn. The table window
-# pads the extreme quantiles by their own span on each side.
-function _pushforward(d, inv_fn)
-    q_lo = dist_quantile(d, 1e-6)
-    q_hi = dist_quantile(d, 1.0 - 1e-6)
-    lo, hi = 2.0 * q_lo - q_hi, 2.0 * q_hi - q_lo
-    ys, zs = table_from_map(inv_fn, lo, hi)
-    return PushforwardDist(d, ys, zs, inv_fn)
-end
+Base.length(d::PushforwardDist) = length(_pf_components(d))

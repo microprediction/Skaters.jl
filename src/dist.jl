@@ -30,6 +30,18 @@ end
 
 dist_gaussian(mean::Float64 = 0.0, std::Float64 = 1.0) = Dist([(1.0, mean, std)])
 
+# The mixture components a consumer may read, or nothing. Python reads a
+# `components` attribute: a Dist's own list, a PushforwardDist's
+# moment-matched shim (pushforward.jl), and nothing for a SplicedDist.
+_components(d::Dist) = d.comps
+_components(d) = nothing
+
+function _need_components(d)
+    cs = _components(d)
+    cs === nothing && throw(ArgumentError("$(typeof(d)) has no mixture components"))
+    return cs
+end
+
 function dist_combine(dists::Vector, weights::Union{Nothing,Vector{Float64}} = nothing)
     n = length(dists)
     n == 0 && throw(ArgumentError("combine needs at least one distribution"))
@@ -43,7 +55,7 @@ function dist_combine(dists::Vector, weights::Union{Nothing,Vector{Float64}} = n
         throw(ArgumentError("combine weights must be finite with a positive total"))
     comps = NTuple{3,Float64}[]
     for (d, w_outer) in zip(dists, weights)
-        for (w_inner, m, s) in d.comps
+        for (w_inner, m, s) in _need_components(d)
             push!(comps, (w_outer / w_total * w_inner, m, s))
         end
     end

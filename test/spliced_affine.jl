@@ -7,8 +7,8 @@
 # affine map moves only the body; the cdf, quantile and logpdf of the mapped
 # law must equal the change of variables.
 #
-# The reference test also wraps seasonal_scale(7); that transform is not yet
-# ported here. The shift and scale transforms (ema_transform, seasonal
+# seasonal_scale(7) is wrapped as in the reference. The shift and scale
+# transforms (ema_transform, seasonal
 # difference and anchor, ou_transform) are covered too, with difference as a
 # control that only reads moments.
 #
@@ -136,7 +136,8 @@ for (name, tr) in (("standardize(0.05)", () -> standardize(0.05)),
                    ("difference()", () -> difference()),
                    ("seasonal_difference(7)", () -> seasonal_difference(7)),
                    ("seasonal_anchor(7)", () -> seasonal_anchor(7)),
-                   ("ou_transform()", () -> ou_transform()))
+                   ("ou_transform()", () -> ou_transform()),
+                   ("seasonal_scale(7)", () -> seasonal_scale(7)))
     f = conjugate(laplace(), tr(), 1)
     st = nothing
     d = nothing

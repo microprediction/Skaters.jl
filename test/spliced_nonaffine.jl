@@ -1,11 +1,9 @@
 # Transforms that read mixture components, fed laplace's tail-spliced
 # predictive. Mirrors the reference's tests/test_spliced_nonaffine.py
-# (skaters bc67bd8). The nonlinear inverses (power_transform, yeo_johnson)
-# emit the exact pushforward of the spliced law; the k>1 widening of
-# ema_transform, seasonal_difference and seasonal_anchor widens the body and
-# lets the splice follow it.
-#
-# The reference test also covers gaussianize, which this port does not have.
+# (skaters bc67bd8). The nonlinear inverses (power_transform, yeo_johnson,
+# gaussianize) emit the exact pushforward of the spliced law; the k>1
+# widening of ema_transform, seasonal_difference and seasonal_anchor widens
+# the body and lets the splice follow it.
 #
 # Run: julia --project=. test/spliced_nonaffine.jl
 using Skaters
@@ -112,6 +110,7 @@ end
 # Conjugated laplace runs past the splice (live from about step 510).
 for (name, make, k) in (("power_transform", () -> power_transform(0.5), 1),
                         ("yeo_johnson", () -> yeo_johnson(0.5), 1),
+                        ("gaussianize", () -> gaussianize(), 1),
                         ("ema_transform", () -> ema_transform(0.05), 3),
                         ("seasonal_difference", () -> seasonal_difference(2), 3),
                         ("seasonal_anchor", () -> seasonal_anchor(2), 3))
