@@ -42,6 +42,18 @@ for k in (1, 3)
     add("yeojohnson_half", conjugate(leaf(k), yeo_johnson(0.5), k))
     add("ou", conjugate(leaf(k), ou_transform(0.1), k))
     add("ou_sqrt", conjugate(conjugate(leaf(k), ou_transform(0.1), k), yeo_johnson(0.5), k))
+    add("seasonal_scale", conjugate(leaf(k), seasonal_scale(7), k))
+    add("seasonal_scale_c", conjugate(leaf(k), seasonal_scale(7; alpha = 0.1, center = true), k))
+    add("power_exact", conjugate(leaf(k), power_transform(0.5; exact = true), k))
+    add("yeojohnson_exact", conjugate(leaf(k), yeo_johnson(0.5; exact = true), k))
+    add("log_lower", conjugate(leaf(k), log_transform(lower = -15.0), k))
+    add("log_upper", conjugate(leaf(k), log_transform(upper = 15.0), k))
+    add("gaussianize", conjugate(leaf(k), gaussianize(), k))
+    add("gaussianize_smooth", conjugate(leaf(k), gaussianize(smooth = true), k))
+    add("gaussianize_delete",
+        conjugate(leaf(k), gaussianize(max_knots = 15, guard = "delete", slope_cap = 1.5), k))
+    add("gaussianize_emin",
+        conjugate(leaf(k), gaussianize(max_knots = 15, guard = "emin", slope_cap = 1.5), k))
     add("ema_skater", ema(0.05; k = k))
     add("pw_ensemble", precision_weighted_ensemble(Any[ema(0.05; k = k), ema(0.2; k = k)]; k = k))
     add("multiscale", multiscale(kk -> conjugate(leaf(kk), ema_transform(0.1), kk), k))
@@ -61,6 +73,7 @@ push!(scenarios, ("spec_diff_ensemble", 1, spec_build(
 push!(scenarios, ("spec_ema", 1, spec_build(ema_spec(0.05, 1))))
 push!(scenarios, ("pol_laplace", 1, laplace(k = 1)))
 push!(scenarios, ("pol_laplace_k3", 3, laplace(k = 3)))
+push!(scenarios, ("pol_flesaker", 1, flesaker(k = 1, lower = -15.0)))
 
 fails = 0
 checked = 0
@@ -107,6 +120,10 @@ function check_block(scenarios, series, expected_block)
     end
 end
 
+# Every scenario the reference wrote must be in the registry above.
+let covered = Set(first.(scenarios)), uncovered = setdiff(Set(keys(v["scenarios"])), covered)
+    isempty(uncovered) || error("vectors.json scenarios missing from the registry: $(sort(collect(uncovered)))")
+end
 check_block(scenarios, series, v["scenarios"])
 
 # Sticky/dirac on the repeat-heavy series (exact repeats + 0.25-grid jumps).

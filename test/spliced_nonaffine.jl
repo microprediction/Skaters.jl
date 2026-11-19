@@ -121,6 +121,27 @@ for (name, make, k) in (("power_transform", () -> power_transform(0.5), 1),
     end
 end
 
+# Deep-tail quantiles (skaters 0ad69a5). Below 1e-8 body tail mass the
+# quantile is solved on erfc sums, so the body mass beyond it matches the
+# target to relative precision instead of sitting on a 0.5(1 + erf) plateau.
+let d = spliced(), hit = 0
+    for p in (1e-9, 1e-11, 1 - 1e-9, 1 - 1e-11)
+        x = dist_quantile(d, p)
+        check((x < dist_quantile(d, 0.5)) == (p < 0.5), "deep tail p=$p on the wrong side")
+        upper = p > 0.5
+        mass = sum(w * 0.5 * Skaters.erfc((x - m) / (s * sqrt(2.0)) * (upper ? 1 : -1))
+                   for (w, m, s) in d.body.comps)
+        zt = upper ? d.t_up + Skaters._gpd_isf((1 - p) / d.zeta_up, d.g_up, d.s_up) :
+                     d.t_lo - Skaters._gpd_isf(p / d.zeta_lo, d.g_lo, d.s_lo)
+        t = max(Skaters._phi_t(-abs(zt)), Skaters._TEPS)
+        if t < 1e-8
+            hit += 1
+            check(approx(mass, t; rtol = 1e-6), "deep tail p=$p: body mass $mass vs $t")
+        end
+    end
+    check(hit >= 2, "deep tail: only $hit quantiles reached the erfc solve")
+end
+
 if failures > 0
     error("SPLICED NONAFFINE FAILED: $failures check(s)")
 end

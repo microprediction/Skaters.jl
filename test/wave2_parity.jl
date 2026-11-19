@@ -5,8 +5,7 @@
 # parity/wave2_vectors.json); the probes are those of test/parity.jl.
 #
 # Every value holds at 1e-6, including the long-series runs that wrap
-# laplace past its GPD splice (their 32-point quantile grids stay clear of
-# the extreme quantiles that test/transform_parity.jl has to allow for).
+# laplace past its GPD splice.
 #
 # Run: julia --project=. test/wave2_parity.jl
 using JSON

@@ -122,7 +122,7 @@ def fixed_spliced(long, short, llo):
     rebuilt from those parameters, and pushed through every inverse that
     reads or emits a non-mixture predictive. Both sides rebuild the same
     object, so these probes isolate the transforms from laplace's long-run
-    state (see test/transform_parity.jl for the tolerances)."""
+    state."""
     from skaters.dist import Dist
     from skaters.tails import SplicedDist
     from skaters.transform import _widen
