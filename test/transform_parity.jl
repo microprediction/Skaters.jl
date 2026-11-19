@@ -1,5 +1,6 @@
 # Parity for seasonal_scale, gaussianize, log_transform, the exact flag on
-# power_transform and yeo_johnson, stacked and combined pushforwards,
+# power_transform and yeo_johnson, stacked and combined pushforwards, affine
+# maps of pushforwards (standardize or seasonal_scale around them),
 # flesaker, and laplace's tail-spliced predictive through each
 # component-reading transform. The vectors come from the Python reference
 # (parity/gen_transform_vectors.py writes parity/transform_vectors.json);
@@ -74,6 +75,11 @@ for k in (1, 3)
             conjugate(leaf(k), power_transform(0.5; exact = true), k)]; k = k))
     add("log_lower", conjugate(leaf(k), log_transform(lower = lo), k))
     add("log_upper", conjugate(leaf(k), log_transform(upper = hi), k))
+    add("std_yeojohnson_exact",
+        conjugate(conjugate(leaf(k), yeo_johnson(0.0; exact = true), k), standardize(), k))
+    add("std_log", conjugate(conjugate(leaf(k), log_transform(lower = -10.0), k), standardize(), k))
+    add("sscale_log", conjugate(conjugate(leaf(k), log_transform(lower = -10.0), k),
+                                seasonal_scale(7; center = true), k))
 end
 push!(scenarios, ("laplace_power", conjugate(laplace(k = 1), power_transform(0.5), 1)))
 push!(scenarios, ("laplace_yeojohnson", conjugate(laplace(k = 1), yeo_johnson(0.5), 1)))
@@ -86,6 +92,8 @@ push!(scenarios, ("laplace_sdiff_k3", conjugate(laplace(k = 3), seasonal_differe
 push!(scenarios, ("laplace_sanchor_k3", conjugate(laplace(k = 3), seasonal_anchor(2), 3)))
 push!(scenarios, ("flesaker", flesaker(k = 1, lower = llo)))
 push!(scenarios, ("flesaker_upper_k3", flesaker(k = 3, upper = lhi)))
+push!(scenarios, ("laplace_std_yeojohnson_exact",
+    conjugate(conjugate(laplace(k = 1), yeo_johnson(0.0; exact = true), 1), standardize(0.05), 1)))
 
 expected_all = v["scenarios"]
 length(scenarios) == length(expected_all) ||
@@ -172,6 +180,11 @@ let (g_inv, g_st) = state_after(gaussianize(), short),
             "widen" => Skaters._widen(d, 0.7, 0.3),
             "widen_pushforward" => Skaters._widen(a, 0.7, 0.3),
             "combine" => dist_combine(Any[a, b], [0.3, 0.7]),
+            "affine_power_exact" => dist_affine(b, 2.5, -1.0),
+            "affine_power_exact_neg" => dist_affine(b, -1.7, 0.5),
+            "affine_log_lower_neg" => dist_affine(lg(Any[d], e)[1], -0.3, 4.0),
+            "shift_yeojohnson_log_exact" => dist_shift(yjx(Any[d], e)[1], 1.5),
+            "scale_log_upper" => dist_scale(lgu(Any[d], e)[1], -2.0),
         )
         length(got) == length(c["out"]) || error("fixed_spliced: probe set mismatch")
         for (key, want) in c["out"]

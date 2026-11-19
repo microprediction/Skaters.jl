@@ -22,7 +22,7 @@ from skaters.ensemble import precision_weighted_ensemble
 from skaters.leaf import leaf
 from skaters.transform import (ema_transform, gaussianize, log_transform, power_transform,
                                seasonal_anchor, seasonal_difference, seasonal_scale,
-                               yeo_johnson)
+                               standardize, yeo_johnson)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROBE = 0.3
@@ -85,6 +85,14 @@ def short_scenarios(lo, hi):
                  conjugate(leaf(k=k), power_transform(0.5, exact=True), k=k)], k=k)),
             ("log_lower", k, conjugate(leaf(k=k), log_transform(lower=lo), k=k)),
             ("log_upper", k, conjugate(leaf(k=k), log_transform(upper=hi), k=k)),
+            # affine transforms around a pushforward predictive
+            ("std_yeojohnson_exact", k,
+             conjugate(conjugate(leaf(k=k), yeo_johnson(0.0, exact=True), k=k), standardize(), k=k)),
+            ("std_log", k,
+             conjugate(conjugate(leaf(k=k), log_transform(lower=-10.0), k=k), standardize(), k=k)),
+            ("sscale_log", k,
+             conjugate(conjugate(leaf(k=k), log_transform(lower=-10.0), k=k),
+                       seasonal_scale(7, center=True), k=k)),
         ]
         s += [(n + suf, kk, f) for n, kk, f in block]
     return s
@@ -103,6 +111,8 @@ def long_scenarios(lo, hi):
         ("laplace_sanchor_k3", 3, conjugate(laplace(k=3), seasonal_anchor(2), k=3)),
         ("flesaker", 1, flesaker(k=1, lower=lo)),
         ("flesaker_upper_k3", 3, flesaker(k=3, upper=hi)),
+        ("laplace_std_yeojohnson_exact", 1,
+         conjugate(conjugate(laplace(k=1), yeo_johnson(0.0, exact=True), k=1), standardize(0.05), k=1)),
     ]
     return s
 
@@ -159,6 +169,11 @@ def fixed_spliced(long, short, llo):
             "widen": _widen(d, 0.7, 0.3),
             "widen_pushforward": _widen(a, 0.7, 0.3),
             "combine": Dist.combine([a, b], [0.3, 0.7]),
+            "affine_power_exact": b.affine(2.5, -1.0),
+            "affine_power_exact_neg": b.affine(-1.7, 0.5),
+            "affine_log_lower_neg": lg([d], {})[0].affine(-0.3, 4.0),
+            "shift_yeojohnson_log_exact": yjx([d], {})[0].shift(1.5),
+            "scale_log_upper": lgu([d], {})[0].scale(-2.0),
         }
         c["out"] = {k: probe_dist(v) for k, v in dists.items()}
         out.append(c)
