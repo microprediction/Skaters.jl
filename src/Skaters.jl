@@ -23,6 +23,8 @@ include("periodicity.jl")
 include("spec.jl")
 include("search.jl")
 include("granger.jl")
+include("residual_transform.jl")
+include("homogenize.jl")
 
 export granger, granger_params, MixtureDist
 export Dist, SplicedDist, PushforwardDist, dist_gaussian, dist_combine, dist_mean, dist_var, dist_std,
@@ -37,8 +39,10 @@ export Dist, SplicedDist, PushforwardDist, dist_gaussian, dist_combine, dist_mea
     terminal_leaf_ensemble, gpdtails, parade, laplace, flesaker,
     running_cov, ema_cov, ledoit_wolf_cov,
     period_detector, top_periods,
-    spec_build, spec_name, leaf_spec, ema_spec, ensemble_spec, conjugate_spec,
+    spec_build, build, to_json, from_json, spec_name, leaf_spec, ema_spec, ensemble_spec, conjugate_spec,
     diff_spec, frac_spec, std_spec, ema_t_spec,
-    adaptive_search
+    adaptive_search, search, dantzig, Skater,
+    residual_transform, ResidualDiagnostics, CorrectedDist,
+    homogenize, homogenize_candidates, HomogenizedDist
 
 end # module
