@@ -1,13 +1,14 @@
 # Standard Pkg.test entry. Runs the four gates in order: parity (the
 # 1e-6 vector gate), quantile contract (the shared cross-language inverse-CDF
 # cases), robustness (adversarial streams), contract (determinism and
-# checkpoint-resume), then the SplicedDist affine regression test. Each
-# suite also runs standalone:
+# checkpoint-resume), then the SplicedDist affine and nonaffine regression
+# tests. Each suite also runs standalone:
 #   julia --project=. test/parity.jl
 #   julia --project=. test/quantile_contract.jl
 #   julia --project=. test/robustness.jl
 #   julia --project=. test/contract.jl
 #   julia --project=. test/spliced_affine.jl
+#   julia --project=. test/spliced_nonaffine.jl
 # Every suite raises (or exits nonzero) on any violation, which fails
 # Pkg.test. Suites are wrapped in modules so their helpers do not collide.
 
@@ -31,4 +32,8 @@ module SplicedAffineSuite
 include("spliced_affine.jl")
 end
 
-println("ALL SUITES OK (parity, quantile contract, robustness, contract, spliced affine)")
+module SplicedNonaffineSuite
+include("spliced_nonaffine.jl")
+end
+
+println("ALL SUITES OK (parity, quantile contract, robustness, contract, spliced affine, spliced nonaffine)")

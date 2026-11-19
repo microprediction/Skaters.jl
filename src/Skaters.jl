@@ -15,6 +15,7 @@ include("multiscale.jl")
 include("sticky.jl")
 include("terminal.jl")
 include("tails.jl")
+include("pushforward.jl")
 include("parade.jl")
 include("api.jl")
 include("cov.jl")
@@ -24,7 +25,7 @@ include("search.jl")
 include("granger.jl")
 
 export granger, granger_params, MixtureDist
-export Dist, SplicedDist, dist_gaussian, dist_combine, dist_mean, dist_var, dist_std,
+export Dist, SplicedDist, PushforwardDist, dist_gaussian, dist_combine, dist_mean, dist_var, dist_std,
     dist_logpdf, dist_cdf, dist_crps, dist_quantile, dist_pdf, dist_prune,
     dist_shift, dist_scale, dist_affine, dist_body,
     leaf, scale_mixture_leaf, crps_leaf, garch_leaf,

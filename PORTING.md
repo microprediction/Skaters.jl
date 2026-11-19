@@ -132,10 +132,25 @@ conjugating `laplace()` with standardize, garch, ema_transform,
 ou_transform, seasonal_difference or seasonal_anchor threw a `MethodError`
 once the GPD splice went live. `test/spliced_affine.jl` checks the change
 of variables and runs each wrapper past the splice. The reference test also
-wraps `seasonal_scale`, which this port does not have yet. Branches that
-read `d.comps` directly (ema_transform, seasonal_difference and
-seasonal_anchor at horizons past the first, power_transform, yeo_johnson)
-still expect a plain `Dist`.
+wraps `seasonal_scale`, which this port does not have yet.
+
+Transforms that read `d.comps` directly handle `SplicedDist` too, mirroring
+the reference's bc67bd8. At horizons past the first, ema_transform,
+seasonal_difference and seasonal_anchor widen the body through `_widen` and
+rebuild the `SplicedDist` with the same thresholds, tail masses and GPD
+parameters. power_transform and yeo_johnson emit the exact pushforward of a
+`SplicedDist` through their inverse map as a `PushforwardDist`
+(`src/pushforward.jl`, ported from the reference's `pushforward.py`): a
+table from `table_from_map` over the window from `quantile(1e-6)` to
+`quantile(1 - 1e-6)`, padded by its span on each side. Only the table plus
+analytic-inverse form is ported; the reference's `fwd_fn`,
+`log_jacobian_fn`, `component_moments_fn` and `scaled_inv_fn` options are
+not, and nothing here needs them. Mixture outputs take the old code path
+unchanged, which the parity gate confirms. A `PushforwardDist` handed to a
+further component-reading transform still throws, where the reference would
+read its moment-matched `components` shim. `test/spliced_nonaffine.jl`
+mirrors the reference's `tests/test_spliced_nonaffine.py`, minus
+gaussianize, which this port does not have.
 
 ## Refresh ritual
 

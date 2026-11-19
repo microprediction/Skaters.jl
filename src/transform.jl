@@ -156,7 +156,7 @@ function ema_transform(alpha::Float64 = 0.05)
         add = 0.0
         for d in dists
             if add > 0.0
-                push!(out, Dist([(w, m + level, sqrt(s * s + add)) for (w, m, s) in d.comps]))
+                push!(out, _widen(d, level, add))
             else
                 push!(out, dist_shift(d, level))
             end
@@ -418,8 +418,7 @@ function seasonal_difference(period::Int = 12)
             push!(recovered_means, dist_mean(d) + anchor_mean)
             push!(recovered_vars, dist_var(d) + anchor_var)
             if anchor_var > 0.0
-                push!(result, Dist([(w, m + anchor_mean, sqrt(s * s + anchor_var))
-                                    for (w, m, s) in d.comps]))
+                push!(result, _widen(d, anchor_mean, anchor_var))
             else
                 push!(result, dist_shift(d, anchor_mean))
             end
@@ -517,8 +516,7 @@ function seasonal_anchor(period::Int; alpha::Float64 = 0.2, weight::Float64 = 0.
                 ema_resp[p+1] = [(1.0 - alpha) * ema_resp[p+1][i] + alpha * r[i] for i in 1:H]
             end
             if a_var > 0.0
-                push!(result, Dist([(w, m + a_mean, sqrt(s * s + a_var))
-                                    for (w, m, s) in d.comps]))
+                push!(result, _widen(d, a_mean, a_var))
             else
                 push!(result, dist_shift(d, a_mean))
             end
@@ -527,6 +525,13 @@ function seasonal_anchor(period::Int; alpha::Float64 = 0.2, weight::Float64 = 0.
     end
     return (forward, inverse_k)
 end
+
+# Shift by delta and add independent Gaussian variance add. Exact for a
+# Gaussian mixture (each component widens). A tail-spliced predictive has no
+# components to widen, so its body widens and the GPD splice, which lives in
+# the body's PIT space, follows it (the SplicedDist method is in tails.jl).
+_widen(d::Dist, delta::Float64, add::Float64) =
+    Dist([(w, m + delta, sqrt(s * s + add)) for (w, m, s) in d.comps])
 
 # --- signed power transform ---
 
@@ -541,6 +546,10 @@ function power_transform(p::Float64 = 0.5)
     function inverse_k(dists::Vector, state::Dict)
         result = Any[]
         for d in dists
+            if d isa SplicedDist   # tail-spliced: exact pushforward
+                push!(result, _pushforward(d, _inv))
+                continue
+            end
             comps = NTuple{3,Float64}[]
             for (w, mu, sigma) in d.comps
                 orig_mean = _inv(mu)
@@ -603,6 +612,10 @@ function yeo_johnson(lmbda::Float64 = 0.0)
     function inverse_k(dists::Vector, state::Dict)
         result = Any[]
         for d in dists
+            if d isa SplicedDist   # tail-spliced: exact pushforward
+                push!(result, _pushforward(d, _inv))
+                continue
+            end
             comps = NTuple{3,Float64}[(w, _inv(mu), max(sigma * _dinv(mu), 1e-12))
                                       for (w, mu, sigma) in d.comps]
             push!(result, Dist(comps))
