@@ -124,6 +124,19 @@ dists it returned (its `pending` list). That is fine for `Serialization`
 must compare it field by field rather than by identity; the contract
 suite's `deepeq` does exactly that.
 
+`dist_affine`, `dist_shift` and `dist_scale` on `SplicedDist` mirror the
+reference's `SplicedDist` methods (skaters #358 and its follow-up). The
+splice lives in the body's PIT space, so only the body moves; a negative
+multiplier swaps the tails and negates the thresholds. Without them,
+conjugating `laplace()` with standardize, garch, ema_transform,
+ou_transform, seasonal_difference or seasonal_anchor threw a `MethodError`
+once the GPD splice went live. `test/spliced_affine.jl` checks the change
+of variables and runs each wrapper past the splice. The reference test also
+wraps `seasonal_scale`, which this port does not have yet. Branches that
+read `d.comps` directly (ema_transform, seasonal_difference and
+seasonal_anchor at horizons past the first, power_transform, yeo_johnson)
+still expect a plain `Dist`.
+
 ## Refresh ritual
 
 This port is faithful to skaters as of the pinned commit. To refresh:
