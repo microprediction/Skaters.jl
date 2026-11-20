@@ -13,16 +13,24 @@ function multiscale(base, k::Int; scales::Union{Nothing,Vector{Int}} = nothing,
         return base(k)
     end
     subs = Dict{Int,Any}(s => base(max(1, Int(ceil(k / s)))) for s in scales)
+    # State tables are keyed by the stride as a decimal string ("1", "3"), the
+    # reference's canonical layout.
+    keys_ = Dict{Int,String}(s => string(s) for s in scales)
 
     function _skater(y::Float64, state::Union{Nothing,Dict})
         if state === nothing
             state = Dict{String,Any}(
                 "t" => 0,
-                "phase" => Dict{Int,Any}(s => Any[nothing for _ in 1:s] for s in scales),
-                "pending" => Dict{Int,Any}(s => Any[nothing for _ in 1:s] for s in scales),
-                "latest" => Dict{Int,Any}(),
-                "score" => Dict{Int,Any}(s => nothing for s in scales),
+                "phase" => Dict{String,Any}(keys_[s] => Any[nothing for _ in 1:s] for s in scales),
+                "pending" => Dict{String,Any}(keys_[s] => Any[nothing for _ in 1:s] for s in scales),
+                "latest" => Dict{String,Any}(),
+                "score" => Dict{String,Any}(keys_[s] => nothing for s in scales),
             )
+        elseif !haskey(state["score"], keys_[scales[1]])
+            # An older Julia checkpoint keyed these tables by Int.
+            for name in ("phase", "pending", "latest", "score")
+                state[name] = Dict{String,Any}(string(s) => v for (s, v) in state[name])
+            end
         end
         t = state["t"]
         phase = state["phase"]
@@ -31,15 +39,15 @@ function multiscale(base, k::Int; scales::Union{Nothing,Vector{Int}} = nothing,
         score = state["score"]
         for s in scales
             ph = t % s  # 0-based phase index
-            prev = pending[s][ph+1]
+            prev = pending[keys_[s]][ph+1]
             if prev !== nothing
                 lp = max(dist_logpdf(prev, y), _LOGPDF_FLOOR)
-                m = score[s]
-                score[s] = m === nothing ? lp : forget * m + (1.0 - forget) * lp
+                m = score[keys_[s]]
+                score[keys_[s]] = m === nothing ? lp : forget * m + (1.0 - forget) * lp
             end
-            dists, phase[s][ph+1] = subs[s](y, phase[s][ph+1])
-            pending[s][ph+1] = dists[1]
-            latest[s] = dists
+            dists, phase[keys_[s]][ph+1] = subs[s](y, phase[keys_[s]][ph+1])
+            pending[keys_[s]][ph+1] = dists[1]
+            latest[keys_[s]] = dists
         end
         state["t"] = t + 1
 
@@ -50,16 +58,16 @@ function multiscale(base, k::Int; scales::Union{Nothing,Vector{Int}} = nothing,
             fcs = Any[]
             wts = Float64[]
             for s in scales
-                if s > h || !haskey(latest, s)
+                if s > h || !haskey(latest, keys_[s])
                     continue
                 end
                 j = max(1, trunc(Int, h / s + 0.5))
-                dists = latest[s]
+                dists = latest[keys_[s]]
                 if j > length(dists)
                     continue
                 end
                 push!(fcs, dists[j])
-                m = score[s]
+                m = score[keys_[s]]
                 push!(wts, exp((m === nothing ? top : m) - top))
             end
             if length(fcs) == 1
