@@ -24,6 +24,20 @@ struct Dist <: AbstractDist
         wt > 0.0 || throw(ArgumentError("total component weight must be positive"))
         new([(c[1] / wt, c[2], c[3]) for c in comps])
     end
+    # Trusted input (the reference's Dist.trusted): validated, kept bit for
+    # bit, not renormalised. For the inverse of state_to_json.
+    function Dist(comps::Vector{NTuple{3,Float64}}, ::Val{:trusted})
+        isempty(comps) && throw(ArgumentError("Dist needs at least one component"))
+        for (w, m, s) in comps
+            (isfinite(w) && w >= 0.0) ||
+                throw(ArgumentError("component weight must be finite and >= 0, got $w"))
+            isfinite(m) || throw(ArgumentError("component mean must be finite, got $m"))
+            (isfinite(s) && s >= 0.0) ||
+                throw(ArgumentError("component std must be finite and >= 0, got $s"))
+        end
+        fsum(c[1] for c in comps) > 0.0 || throw(ArgumentError("total component weight must be positive"))
+        new(copy(comps))
+    end
 end
 
 # --- Constructors ---

@@ -12,8 +12,8 @@ function running_cov(y::Vector{Float64}, state::Union{Nothing,Dict})
     end
     state["n"] += 1
     k = state["n"]::Int
-    mean = state["mean"]::Vector{Float64}
-    C = state["C"]::Vector{Float64}
+    mean = _fvec!(state, "mean")
+    C = _fvec!(state, "C")
     delta = [y[i] - mean[i] for i in 1:n]
     for i in 1:n
         mean[i] += delta[i] / k
@@ -34,8 +34,8 @@ function ema_cov(y::Vector{Float64}, state::Union{Nothing,Dict}, alpha::Float64 
         state = Dict{String,Any}("mean" => copy(y), "cov" => zeros(n * n), "n" => 1)
         return copy(y), zeros(n * n), state
     end
-    mean = state["mean"]::Vector{Float64}
-    cov = state["cov"]::Vector{Float64}
+    mean = _fvec!(state, "mean")
+    cov = _fvec!(state, "cov")
     state["n"] += 1
     delta = [y[i] - mean[i] for i in 1:n]
     for i in 1:n

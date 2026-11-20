@@ -1,37 +1,40 @@
 # Sticky / lattice projection. Port of skaters/sticky.py.
-# The value table is insertion-ordered (parallel arrays), matching Python's
-# dict ordering, which is semantic for the tie-broken atom selection.
+# The value table is state["counts"], a list of [value, weight] pairs in
+# first-seen order (the reference's canonical layout): decay, prune in place
+# keeping order, then credit y. An existing entry keeps its slot; a new or
+# just-pruned value goes to the end. The order is semantic for the
+# tie-broken atom selection.
 
 function sticky(base; k::Int = 1, propensity_alpha::Float64 = 0.05,
                 spike_frac::Float64 = 0.005, thresh_mult::Float64 = 1.8,
                 max_atoms::Int = 6, prune_eps::Float64 = 1e-6)
     function _skater(y::Float64, state::Union{Nothing,Dict})
         if state === nothing
-            state = Dict{String,Any}("base" => nothing, "vals" => Float64[], "wts" => Float64[])
+            state = Dict{String,Any}("base" => nothing, "counts" => Any[])
+        elseif haskey(state, "vals")
+            # An older Julia checkpoint kept parallel vals/wts vectors.
+            state["counts"] = Any[Any[v, w] for (v, w) in zip(state["vals"], state["wts"])]
+            delete!(state, "vals")
+            delete!(state, "wts")
         end
         dists, state["base"] = base(y, state["base"])
 
-        # Decay, drop below eps (insertion order preserved), then credit y.
-        oldv = state["vals"]::Vector{Float64}
-        oldw = state["wts"]::Vector{Float64}
-        vals = Float64[]
-        wts = Float64[]
-        for i in eachindex(oldv)
-            w = oldw[i] * (1.0 - propensity_alpha)
-            if w >= prune_eps
-                push!(vals, oldv[i])
-                push!(wts, w)
-            end
+        keep = 1.0 - propensity_alpha
+        counts = Any[]
+        for pair in state["counts"]
+            w = pair[2] * keep
+            w < prune_eps && continue
+            push!(counts, Any[pair[1], w])
         end
-        idx = findfirst(==(y), vals)
+        idx = findfirst(p -> p[1] == y, counts)
         if idx === nothing
-            push!(vals, y)
-            push!(wts, propensity_alpha)
+            push!(counts, Any[y, propensity_alpha])
         else
-            wts[idx] += propensity_alpha
+            counts[idx][2] += propensity_alpha
         end
-        state["vals"] = vals
-        state["wts"] = wts
+        state["counts"] = counts
+        vals = Float64[Float64(p[1]) for p in counts]
+        wts = Float64[Float64(p[2]) for p in counts]
 
         # Lattice atoms: revisited values above the floor, top by weight
         # (stable sort so ties break by insertion order, as in Python).

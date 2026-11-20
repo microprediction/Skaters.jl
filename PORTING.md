@@ -133,6 +133,55 @@ dists it returned (its `pending` list). That is fine for `Serialization`
 must compare it field by field rather than by identity; the contract
 suite's `deepeq` does exactly that.
 
+## Canonical state (cross-language checkpoints)
+
+State uses the reference's canonical layout (skaters docs/STATE.md,
+skaters#394), so a checkpoint written by Python, JS or this port resumes
+in any of them. `state_to_json(state)` returns the plain image (every
+`Dist` as `{"components": [[w, mean, std], ...]}`, every `SplicedDist` as
+`{"spliced": true, "body": ..., "t_lo": ..., ...}`, tuples as lists) and
+throws `ArgumentError`, naming the path, on non-finite floats, non-string
+keys, functions or any other object. `assert_plain_state` checks without
+converting. `state_from_json` is the inverse: a components dict whose
+weights already sum to one is kept bit for bit through `Dist(comps,
+Val(:trusted))`, as the reference's `Dist.trusted`, and others are
+normalised. A JSON array comes back as a `Vector{Float64}`, `Vector{Int}`,
+`Vector{Union{Nothing,Float64}}` or `Vector{Any}`, and skaters read typed
+vectors through `_fvec!`, `_ivec!` and `_ofvec!`, which convert a restored
+vector in place, so any numeric array (ints included) is accepted.
+
+Layout changes made here to match the reference: sticky keeps `counts`, a
+list of `[value, weight]` pairs in first-seen order (was parallel
+`vals`/`wts`); multiscale keys `phase`, `pending`, `latest` and `score` by
+the stride's decimal string (was Int); the period detector keys `cross` by
+the lag's decimal string (was a vector in lag order); granger keeps `pend`
+as a queue of `[laplace predictives, learned predictives]` pairs, `cum` as
+`cum[h][phase]` pairs and `z` as a list, the reference's k-general layout;
+terminal_leaf_ensemble carries `adapt` (`nothing`, or the adaptive
+temperature's object). That last one came with a port of the reference's
+`adaptive_temperature` (with `temp_rho` and `temp_band`), which this port
+lacked. Every older Julia checkpoint still resumes: each of those skaters
+rewrites its part of an old state on its next step.
+
+`test/state_resume.jl` is the gate. `parity/gen_state_vectors.py` writes
+`parity/state_vectors.json`: Python checkpoints, through `state_to_json`, of
+50 scenarios (every transform under conjugate, laplace in its variants
+including gaps, repeats and k = 3, granger, flesaker, dantzig, search,
+multiscale, parade, sticky, homogenize, residual_transform, the ensembles
+and the leaves) at t = 60, 250 and 530, with the next 20 Python outputs. For
+each checkpoint the test checks that Julia's own checkpoint has the same
+layout (same keys and JSON kinds everywhere), that Julia resumed from
+Python's checkpoint matches Python and a Julia run from scratch to 1e-6,
+and that Julia's own JSON checkpoint resumes bit for bit. It also rewrites
+states into the older Julia layouts and checks they resume bit for bit, and
+runs the walker checks of the reference's `tests/test_state_json.py`. The
+other direction is a script pair: `parity/write_julia_checkpoints.jl`
+writes Julia checkpoints for every scenario and
+`parity/check_julia_checkpoints.py` resumes them in Python against Python's
+own continuation. The reference's mahalanobis, zbank and gpdtail are not
+covered (leaving skaters, skaters#90), nor its conforming_leaf and
+ensemble_leaf, which are outside its public API.
+
 `dist_affine`, `dist_shift` and `dist_scale` on `SplicedDist` mirror the
 reference's `SplicedDist` methods (skaters #358 and its follow-up). The
 splice lives in the body's PIT space, so only the body moves; a negative
@@ -233,7 +282,12 @@ This port is faithful to skaters as of the pinned commit. To refresh:
 
 ## Provenance
 
-All parity vectors come from one reference tree: skaters commit
+`parity/state_vectors.json` comes from `parity/gen_state_vectors.py` run
+against skaters branch feat/canonical-state (080668b, skaters#394) with
+fix/spliced-nonaffine (0ad69a5) merged in and bec9df0's `pushforward.py`
+applied, so the reference has both the canonical layout and the numerics
+the rest of the gate pins.
+All other parity vectors come from one reference tree: skaters commit
 `0ad69a5ff7cea3bc049b351d9a76d5f4c6be0afb` (branch fix/spliced-nonaffine,
 with the deep-tail spliced quantile fix) plus the `src/skaters/pushforward.py`
 change of `bec9df0c6c90a41d0be72a1290455721e9c8b770` (branch

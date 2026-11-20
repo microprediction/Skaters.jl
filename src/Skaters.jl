@@ -25,6 +25,7 @@ include("search.jl")
 include("granger.jl")
 include("residual_transform.jl")
 include("homogenize.jl")
+include("state.jl")
 
 export granger, granger_params, MixtureDist
 export Dist, SplicedDist, PushforwardDist, dist_gaussian, dist_combine, dist_mean, dist_var, dist_std,
@@ -43,6 +44,7 @@ export Dist, SplicedDist, PushforwardDist, dist_gaussian, dist_combine, dist_mea
     diff_spec, frac_spec, std_spec, ema_t_spec,
     adaptive_search, search, dantzig, Skater,
     residual_transform, ResidualDiagnostics, CorrectedDist,
-    homogenize, homogenize_candidates, HomogenizedDist
+    homogenize, homogenize_candidates, HomogenizedDist,
+    state_to_json, state_from_json, assert_plain_state
 
 end # module

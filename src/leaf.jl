@@ -149,7 +149,7 @@ function garch_leaf(k::Int = 1; gamma::Float64 = 0.02, refit_every::Int = 40,
         end
         s["h"] = h
         s["last_r2"] = y * y
-        buf = s["buf"]::Vector{Float64}
+        buf = _fvec!(s, "buf")
         push!(buf, y)
         if length(buf) > window
             popfirst!(buf)

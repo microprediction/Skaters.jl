@@ -92,7 +92,7 @@ function _search_expand(pool, k::Int, top_n::Int, max_depth::Int, transforms,
         for (t_name, _, t_cost) in transforms
             child_cost = parent["cost"] + t_cost
             child_cost > cost_budget && continue
-            recipe = parent["recipe"]::Vector{String}
+            recipe = String[String(r) for r in parent["recipe"]]
             if !isempty(recipe) && recipe[end] == t_name
                 continue
             end
@@ -142,7 +142,8 @@ function adaptive_search(; k::Int = 1, learning_rate::Float64 = 0.5,
     # functions of the recipe (all mutable state lives in the entry), so a
     # fresh instance resuming a saved state rebuilds identical ones.
     memo = Dict{String,Any}()
-    function get_skater(recipe::Vector{String}, detected_periods::Vector{Int})
+    function get_skater(recipe_in::AbstractVector, detected_periods::Vector{Int})
+        recipe = String[String(r) for r in recipe_in]   # a restored recipe is a Vector{Any}
         key = join(recipe, "|")
         if !haskey(memo, key)
             memo[key] = _search_build_from_recipe(recipe, k,
@@ -158,13 +159,13 @@ function adaptive_search(; k::Int = 1, learning_rate::Float64 = 0.5,
                 "detected_periods" => Int[])
         end
         state["n_obs"] += 1
-        buffer = state["buffer"]::Vector{Float64}
+        buffer = _fvec!(state, "buffer")
         push!(buffer, y)
         if length(buffer) > replay_buffer
             deleteat!(buffer, 1:(length(buffer)-replay_buffer))
         end
         pool = state["pool"]
-        periods = state["detected_periods"]::Vector{Int}
+        periods = _ivec!(state, "detected_periods")
 
         # 1. Run all active candidates.
         for e in pool

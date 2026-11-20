@@ -49,7 +49,7 @@ function fractional_difference(d::Float64 = 0.4, window::Int = 50)
         if state === nothing
             state = Dict{String,Any}("buffer" => Float64[])
         end
-        buf = state["buffer"]::Vector{Float64}
+        buf = _fvec!(state, "buffer")
         push!(buf, y)
         if length(buf) > window
             popfirst!(buf)
@@ -63,7 +63,7 @@ function fractional_difference(d::Float64 = 0.4, window::Int = 50)
         # recovered value carries a row of responses to the future innovations,
         # built by the same recursion as its mean: Var = sum_i c_{h,i}^2 var_i (#255).
         H = length(dists)
-        buf = copy(state["buffer"]::Vector{Float64})
+        buf = copy(_fvec!(state, "buffer"))
         cbuf = Union{Nothing,Vector{Float64}}[nothing for _ in buf]
         result = Any[]
         for (hh, d_in) in enumerate(dists)
@@ -389,7 +389,7 @@ function seasonal_difference(period::Int = 12)
         if state === nothing
             return 0.0, Dict{String,Any}("buffer" => Float64[y])
         end
-        buf = state["buffer"]::Vector{Float64}
+        buf = _fvec!(state, "buffer")
         L = length(buf)
         if L >= period
             y_prime = y - buf[L-period+1]
@@ -403,7 +403,7 @@ function seasonal_difference(period::Int = 12)
         return y_prime, state
     end
     function inverse_k(dists::Vector, state::Dict)
-        buf = copy(state["buffer"]::Vector{Float64})
+        buf = copy(_fvec!(state, "buffer"))
         recovered_means = Float64[]
         recovered_vars = Float64[]
         result = Any[]
@@ -459,8 +459,8 @@ function seasonal_anchor(period::Int; alpha::Float64 = 0.2, weight::Float64 = 0.
             return 0.0, Dict{String,Any}("ema" => Vector{Union{Nothing,Float64}}(nothing, period),
                                          "buffer" => Float64[y], "n" => 1)
         end
-        buf = state["buffer"]::Vector{Float64}
-        ema = state["ema"]::Vector{Union{Nothing,Float64}}
+        buf = _fvec!(state, "buffer")
+        ema = _ofvec!(state, "ema")
         p = (state["n"] % period)          # 0-based phase, as in Python
         snaive = length(buf) >= period ? buf[length(buf)-period+1] : buf[end]
         y_prime = y - _anchor(ema[p+1], snaive)
@@ -474,8 +474,8 @@ function seasonal_anchor(period::Int; alpha::Float64 = 0.2, weight::Float64 = 0.
         return y_prime, state
     end
     function inverse_k(dists::Vector, state::Dict)
-        buf = copy(state["buffer"]::Vector{Float64})
-        ema = state["ema"]::Vector{Union{Nothing,Float64}}
+        buf = copy(_fvec!(state, "buffer"))
+        ema = _ofvec!(state, "ema")
         n = state["n"]
         H = length(dists)
         recovered_means = Float64[]
@@ -557,7 +557,7 @@ function seasonal_scale(period::Int; alpha::Float64 = 0.05, center::Bool = false
         return state["var_g"] / (1.0 - (1.0 - a_g)^updates)
     end
     function _phase_stats(state, p)
-        vis = state["vis"]::Vector{Int}
+        vis = _ivec!(state, "vis")
         w = vis[p+1] / (vis[p+1] + K0)
         vp = max(state["var"][p+1], eps * eps)
         vg = max(_vg(state), eps * eps)
@@ -577,9 +577,9 @@ function seasonal_scale(period::Int; alpha::Float64 = 0.05, center::Bool = false
         dg = y - state["mu_g"]
         state["mu_g"] += a_g * dg
         state["var_g"] = (1 - a_g) * state["var_g"] + a_g * dg * dg
-        mu = state["mu"]::Vector{Float64}
-        var = state["var"]::Vector{Float64}
-        vis = state["vis"]::Vector{Int}
+        mu = _fvec!(state, "mu")
+        var = _fvec!(state, "var")
+        vis = _ivec!(state, "vis")
         if vis[p+1] == 0                 # first visit seeds from global stats
             mu[p+1] = y
             var[p+1] = _vg(state)
@@ -921,8 +921,8 @@ function ar(order::Int = 2; lam::Float64 = 0.99, ridge::Float64 = 1.0, decay::Fl
             state = Dict{String,Any}("buffer" => Float64[], "phi" => zeros(Float64, p),
                 "phi_used" => zeros(Float64, p), "P" => _init_P(), "n" => 0)
         end
-        buf = state["buffer"]::Vector{Float64}
-        phi = state["phi"]::Vector{Float64}
+        buf = _fvec!(state, "buffer")
+        phi = _fvec!(state, "phi")
         if !haskey(state, "phi_used")
             # a state from before skaters#232/#235 carries only the raw coefficients
             state["phi_used"] = _ar_stationary(copy(phi))
@@ -933,11 +933,11 @@ function ar(order::Int = 2; lam::Float64 = 0.99, ridge::Float64 = 1.0, decay::Fl
             # the residual EMITTED (and inverse_k's forecast) uses the stationarity-
             # projected coefficients from the end of the previous tick (skaters#232);
             # the RLS keeps fitting the raw problem with its own prediction error
-            phi_used = state["phi_used"]::Vector{Float64}
+            phi_used = _fvec!(state, "phi_used")
             prediction = fsum(phi_used[i+1] * x[i+1] for i in 0:(p-1))
             residual = y - prediction
             raw_residual = y - fsum(phi[i+1] * x[i+1] for i in 0:(p-1))
-            P = state["P"]::Vector{Float64}
+            P = _fvec!(state, "P")
             Px = _mat_vec(P, x, p)
             denom = lam + _dot(x, Px, p)
             if abs(denom) > 1e-15
@@ -966,12 +966,12 @@ function ar(order::Int = 2; lam::Float64 = 0.99, ridge::Float64 = 1.0, decay::Fl
         return residual, state
     end
     function inverse_k(dists::Vector, state::Dict)
-        buf = copy(state["buffer"]::Vector{Float64})
+        buf = copy(_fvec!(state, "buffer"))
         # Forecast with stationarity-constrained coefficients: a non-stationary
         # online fit has no convergent multi-step forecast. The one-step fit in
         # state is left intact; only the extrapolation is kept well-posed.
-        phi = haskey(state, "phi_used") ? (state["phi_used"]::Vector{Float64}) :
-              _ar_stationary(state["phi"]::Vector{Float64})
+        phi = haskey(state, "phi_used") ? _fvec!(state, "phi_used") :
+              _ar_stationary(_fvec!(state, "phi"))
         H = length(dists)
         # Impulse responses psi_0..psi_{H-1}: psi_0 = 1, psi_i = sum_j phi_j psi_{i-j}.
         # The h-step variance is sigma^2 * sum_{i<=h} psi_i^2, NOT a recursion on
@@ -1056,8 +1056,8 @@ function grouped_ar(max_lag::Int = 16; lam::Float64 = 0.99, ridge::Float64 = 1.0
             state = Dict{String,Any}("buffer" => Float64[], "theta" => zeros(Float64, n_groups),
                 "phi_used" => zeros(Float64, max_lag), "P" => _eye(n_groups, ridge), "n" => 0)
         end
-        buf = state["buffer"]::Vector{Float64}
-        theta = state["theta"]::Vector{Float64}
+        buf = _fvec!(state, "buffer")
+        theta = _fvec!(state, "theta")
         if !haskey(state, "phi_used")
             # a state from before skaters#235: the projected per-lag set follows from theta
             state["phi_used"] = _ar_stationary(Float64[theta[groups[j+1]+1] for j in 0:(max_lag-1)])
@@ -1069,11 +1069,11 @@ function grouped_ar(max_lag::Int = 16; lam::Float64 = 0.99, ridge::Float64 = 1.0
             # per-lag coefficients (skaters#232/#235), so forward's emission and
             # inverse_k's reconstruction agree; the RLS keeps fitting the raw
             # group-level problem with its own prediction error.
-            phi_used = state["phi_used"]::Vector{Float64}
+            phi_used = _fvec!(state, "phi_used")
             prediction = fsum(phi_used[j+1] * buf[length(buf)-j] for j in 0:(max_lag-1))
             residual = y - prediction
             raw_residual = y - fsum(theta[g+1] * x[g+1] for g in 0:(n_groups-1))
-            P = state["P"]::Vector{Float64}
+            P = _fvec!(state, "P")
             Px = _mat_vec(P, x, n_groups)
             denom = lam + _dot(x, Px, n_groups)
             if abs(denom) > 1e-15
@@ -1101,10 +1101,10 @@ function grouped_ar(max_lag::Int = 16; lam::Float64 = 0.99, ridge::Float64 = 1.0
         return residual, state
     end
     function inverse_k(dists::Vector, state::Dict)
-        buf = copy(state["buffer"]::Vector{Float64})
+        buf = copy(_fvec!(state, "buffer"))
         # Same coefficients forward() already emitted residuals under
         # (skaters#232), except for a pre-#235 state that has no cache yet.
-        phi = haskey(state, "phi_used") ? (state["phi_used"]::Vector{Float64}) :
+        phi = haskey(state, "phi_used") ? _fvec!(state, "phi_used") :
               _ar_stationary(Float64[state["theta"][groups[j+1]+1] for j in 0:(max_lag-1)])
         H = length(dists)
         # Impulse responses, as in ar(): h-step variance is sigma^2 * sum psi_i^2.
@@ -1515,7 +1515,7 @@ function gaussianize(; max_knots::Int = 39, warmup::Int = 30, n_particles::Int =
             z = state["n"] != 0 ? (y - mu) / sigma : 0.0
         end
         z = max(-Z_MAX, min(Z_MAX, z))
-        buf = state["buf"]::Vector{Float64}
+        buf = _fvec!(state, "buf")
         insert!(buf, searchsortedlast(buf, y) + 1, y)      # bisect.insort
         n = state["n"] + 1
         d0 = y - state["mu"]

@@ -113,10 +113,11 @@ end
 
 function _granger_features(state::Dict, n::Int)
     z = state["z"]
-    zs = z === nothing ? 0.0 : clamp(Float64(z), -8.0, 8.0)
+    z1 = (z === nothing || isempty(z)) ? nothing : z[1]
+    zs = z1 === nothing ? 0.0 : clamp(Float64(z1), -8.0, 8.0)
     ts = _granger_trunk_state(state["learned"])
     if ts !== nothing && length(ts["log_w"]) == n
-        lw = ts["log_w"]::Vector{Float64}
+        lw = Float64[Float64(v) for v in ts["log_w"]]
         m = maximum(lw)
         l = Float64[max(v - m, -20.0) / 20.0 for v in lw]
     else
@@ -206,21 +207,36 @@ function granger(params::Dict = granger_params("monthly"); k::Int = 1)
     ex = _granger_expert(P, 1, () -> current[])
     n = length(P["candidates"])
     function _skater(y, state::Union{Nothing,Dict})
+        # Canonical layout (the reference's, general in k): pend is a queue of
+        # [laplace predictives, learned predictives] pairs, cum[h][phase] the
+        # two running scores, z a list of length k.
         if state === nothing
-            state = Dict{String,Any}("lap" => nothing, "learned" => nothing, "pend" => nothing,
-                "cum" => [0.0, 0.0], "t" => 0, "z" => nothing, "repeat_frac" => 0.0,
-                "abs_z_mean" => 0.0, "n" => 0, "last_y" => nothing)
+            state = Dict{String,Any}("lap" => nothing, "learned" => nothing, "pend" => Any[],
+                "cum" => Any[Any[Any[0.0, 0.0]]], "t" => 0, "z" => Any[nothing],
+                "repeat_frac" => 0.0, "abs_z_mean" => 0.0, "n" => 0, "last_y" => nothing)
+        elseif state["pend"] === nothing || !(state["cum"][1] isa AbstractVector)
+            # An older Julia checkpoint: pend the last pair of dists, cum a pair, z a scalar.
+            old = state["pend"]
+            state["pend"] = old === nothing ? Any[] : Any[Any[Any[old[1]], Any[old[2]]]]
+            state["cum"] = Any[Any[Any[state["cum"][1], state["cum"][2]]]]
+            state["z"] = Any[state["z"]]
         end
         yv = y === nothing ? NaN : Float64(y)
         finite = isfinite(yv)
-        if finite && state["pend"] !== nothing
-            for j in 1:2
-                lp = dist_logpdf(state["pend"][j], yv)
+        t = state["t"]
+        pend = state["pend"]
+        if finite && !isempty(pend)
+            lap_d, lrn_d = pend[end]
+            c = state["cum"][1][1]
+            for (j, d) in enumerate((lap_d[1], lrn_d[1]))
+                lp = dist_logpdf(d, yv)
                 # +Inf (an exact hit on a lattice atom) counts +1e6; NaN or -Inf -1e6
-                state["cum"][j] += lp == Inf ? 1e6 : (isfinite(lp) ? lp : -1e6)
+                c[j] += lp == Inf ? 1e6 : (isfinite(lp) ? lp : -1e6)
             end
             # re-centre: the weights depend only on the difference
-            state["cum"] .-= maximum(state["cum"])
+            mx = max(c[1], c[2])
+            c[1] -= mx
+            c[2] -= mx
         end
         current[] = _granger_gate(P["gate"], _granger_features(state, n))
         lrn = nothing
@@ -230,21 +246,23 @@ function granger(params::Dict = granger_params("monthly"); k::Int = 1)
             current[] = nothing
         end
         lap, state["lap"] = ref(yv, state["lap"])
-        state["pend"] = Any[lap[1], lrn[1]]
-        pz = state["learned"]["z"]
-        state["z"] = pz === nothing ? nothing : pz[1]
+        push!(pend, Any[collect(lap), collect(lrn)])
+        length(pend) > 1 && popfirst!(pend)        # the last k issued pairs
+        pz = state["learned"] isa AbstractDict ? get(state["learned"], "z", nothing) : nothing
+        state["z"] = pz === nothing ? Any[nothing] : Any[pz...]
         if finite
             nn = state["n"] + 1
             rep = (state["last_y"] !== nothing && yv == state["last_y"]) ? 1.0 : 0.0
             state["repeat_frac"] += (rep - state["repeat_frac"]) / nn
-            z0 = state["z"]
+            z0 = isempty(state["z"]) ? nothing : state["z"][1]
             if z0 !== nothing && isfinite(z0)
                 state["abs_z_mean"] += (min(abs(z0), 8.0) - state["abs_z_mean"]) / nn
             end
             state["n"] = nn
             state["last_y"] = yv
         end
-        out = MixtureDist(Any[lap[1], lrn[1]], log_prior .+ state["cum"])
+        c = state["cum"][1][1]
+        out = MixtureDist(Any[lap[1], lrn[1]], [log_prior[1] + c[1], log_prior[2] + c[2]])
         state["t"] += 1
         return Any[out], state
     end

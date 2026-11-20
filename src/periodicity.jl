@@ -12,13 +12,19 @@ function period_detector(lags::Union{Nothing,Vector{Int}} = nothing;
         lags = copy(_DEFAULT_LAGS)
     end
     max_lag = maximum(lags)
+    # cross is keyed by the lag as a decimal string (the canonical layout).
+    lag_keys = String[string(L) for L in lags]
 
     function _detect(y::Float64, state::Union{Nothing,Dict})
         if state === nothing
             state = Dict{String,Any}("buffer" => Float64[], "n" => 0,
-                "mean" => 0.0, "var" => 0.0, "cross" => zeros(length(lags)))
+                "mean" => 0.0, "var" => 0.0,
+                "cross" => Dict{String,Any}(key => 0.0 for key in lag_keys))
+        elseif state["cross"] isa AbstractVector
+            # An older Julia checkpoint kept cross as a vector in lag order.
+            state["cross"] = Dict{String,Any}(key => c for (key, c) in zip(lag_keys, state["cross"]))
         end
-        buf = state["buffer"]::Vector{Float64}
+        buf = _fvec!(state, "buffer")
         push!(buf, y)
         state["n"] += 1
 
@@ -26,14 +32,14 @@ function period_detector(lags::Union{Nothing,Vector{Int}} = nothing;
         state["mean"] += alpha * diff
         state["var"] = (1 - alpha) * (state["var"] + alpha * diff * diff)
 
-        mu = state["mean"]::Float64
-        var = state["var"]::Float64
-        cross = state["cross"]::Vector{Float64}
+        mu = Float64(state["mean"])
+        var = Float64(state["var"])
+        cross = state["cross"]
         nb = length(buf)
         for (i, L) in enumerate(lags)
             if nb > L
                 c = (y - mu) * (buf[nb-L] - mu)
-                cross[i] = (1 - alpha) * cross[i] + alpha * c
+                cross[lag_keys[i]] = (1 - alpha) * cross[lag_keys[i]] + alpha * c
             end
         end
         if nb > max_lag + 1
@@ -46,7 +52,7 @@ function period_detector(lags::Union{Nothing,Vector{Int}} = nothing;
         scores = Tuple{Int,Float64}[]
         for (i, L) in enumerate(lags)
             if state["n"] > L
-                acf = var > 0 ? cross[i] / var : 0.0
+                acf = var > 0 ? cross[lag_keys[i]] / var : 0.0
                 push!(scores, (L, acf))
             end
         end

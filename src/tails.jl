@@ -345,7 +345,7 @@ _tail_new() = Dict{String,Any}("t" => nothing, "exc" => Float64[], "s1" => 0.0, 
     "r" => 0.0, "g" => 0.0, "s" => 1.0, "since" => 0, "run" => 0)
 
 function _tail_add!(tail::Dict, e::Float64, nexc::Int)
-    exc = tail["exc"]::Vector{Float64}
+    exc = _fvec!(tail, "exc")
     if length(exc) >= 20
         cap = _gpd_isf(_GUARD_SF, tail["g"], tail["s"])
         if e > cap
@@ -410,7 +410,7 @@ function gpdtails(base, k::Int; level::Float64 = 0.98, nexc::Int = 500,
                     th["skipped"] = get(th, "skipped", 0) + 1
                     continue
                 end
-                warm = th["warm"]::Vector{Float64}
+                warm = _fvec!(th, "warm")
                 push!(warm, z)
                 if length(warm) >= warmup
                     w = sort(warm)

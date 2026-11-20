@@ -13,6 +13,7 @@
 #   julia --project=. test/pushforward_affine.jl
 #   julia --project=. test/transform_parity.jl
 #   julia --project=. test/wave2_parity.jl
+#   julia --project=. test/state_resume.jl
 # Every suite raises (or exits nonzero) on any violation, which fails
 # Pkg.test. Suites are wrapped in modules so their helpers do not collide.
 
@@ -52,4 +53,8 @@ module Wave2ParitySuite
 include("wave2_parity.jl")
 end
 
-println("ALL SUITES OK (parity, quantile contract, robustness, contract, spliced affine, spliced nonaffine, pushforward affine, transform parity, wave2 parity)")
+module StateResumeSuite
+include("state_resume.jl")
+end
+
+println("ALL SUITES OK (parity, quantile contract, robustness, contract, spliced affine, spliced nonaffine, pushforward affine, transform parity, wave2 parity, state resume)")
