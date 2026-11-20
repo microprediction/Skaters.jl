@@ -119,7 +119,11 @@ bit: a `SplicedDist` quantile in the deep tail bisected the body's
 0.5(1 + erf) cdf at p near 1e-12, where erf's last bit sets a plateau. As
 in the reference (skaters 0ad69a5), below 1e-8 body tail mass the quantile
 is now solved on erfc sums (`_body_tail_quantile` in `src/tails.jl`), which
-keep relative precision, so the answer is fixed by `tol` alone. openlibm's
+keep relative precision, so the answer is fixed by `tol` alone. The cdf
+and logpdf side follows the reference's skaters#398: when the body cdf is
+within 1e-8 of 0 or 1, the splice coordinate z is read from the erfc sum of
+the smaller tail (`_body_tail_mass`) instead of 0.5(1 + erf), so deep-tail
+cdf and logpdf no longer plateau. openlibm's
 `erfc` is fdlibm's, so no extra erfc port is needed. The Acklam inverse-normal quantile is
 ported verbatim from tails.py, including the single Halley polish step.
 
@@ -283,21 +287,19 @@ This port is faithful to skaters as of the pinned commit. To refresh:
 
 ## Provenance
 
-`parity/state_vectors.json` comes from `parity/gen_state_vectors.py` run
-against skaters branch feat/canonical-state (080668b, skaters#394) with
-fix/spliced-nonaffine (0ad69a5) merged in and bec9df0's `pushforward.py`
-applied, so the reference has both the canonical layout and the numerics
-the rest of the gate pins.
-All other parity vectors come from one reference tree: skaters commit
-`0ad69a5ff7cea3bc049b351d9a76d5f4c6be0afb` (branch fix/spliced-nonaffine,
-with the deep-tail spliced quantile fix) plus the `src/skaters/pushforward.py`
-change of `bec9df0c6c90a41d0be72a1290455721e9c8b770` (branch
-fix/pushforward-affine, `PushforwardDist.affine`), applied on top.
-`parity/vectors.json` is that tree's `parity/gen_vectors.py` output, and
-`parity/quantile_contract.json` is unchanged from it.
-`parity/transform_vectors.json` and `parity/wave2_vectors.json` come from
-`parity/gen_transform_vectors.py` and `parity/gen_wave2_vectors.py` run
-against it. The scale-relative `Dist.quantile` and the 2100 default budget
+All parity vectors come from one reference tree: skaters commit
+`cdab5cad450026910752c025f19c7eadc75a6125` (branch feat/canonical-state,
+skaters#394, which merges skaters main and so carries #392's deep-tail
+quantile fix and #393's `PushforwardDist.affine`) with the
+`src/skaters/tails.py` change of `e00e03823df776201c6782fb47012373fda8c3f7`
+(branch fix/spliced-tail-z, skaters#398) applied. `parity/vectors.json` is
+that tree's `parity/gen_vectors.py` output, `parity/quantile_contract.json`
+is unchanged from it, and `parity/transform_vectors.json`,
+`parity/wave2_vectors.json` and `parity/state_vectors.json` come from this
+repo's `parity/gen_transform_vectors.py`, `parity/gen_wave2_vectors.py`
+and `parity/gen_state_vectors.py` run against it. The `state-in-python` CI
+job rebuilds the same tree.
+The scale-relative `Dist.quantile` and the 2100 default budget
 are mirrored in `dist_quantile(::Dist)` and forwarded by
 `dist_quantile(::SplicedDist)`.
 The robustness and contract suites mirror the R port
