@@ -16,3 +16,46 @@ jobs:
       - uses: julia-actions/cache@v2
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
+
+  # Julia-written checkpoints must resume in the Python reference
+  # (parity/write_julia_checkpoints.jl, then parity/check_julia_checkpoints.py).
+  # The reference is rebuilt exactly as parity/state_vectors.json was made:
+  # skaters feat/canonical-state with fix/spliced-nonaffine merged in and
+  # fix/pushforward-affine's pushforward.py applied.
+  # TODO: once skaters#392, #393 and #394 merge, check out the skaters main
+  # commit that carries all three instead of rebuilding the tree here.
+  state-in-python:
+    runs-on: ubuntu-latest
+    env:
+      SKATERS_CANONICAL_STATE: 080668ba31a0163827800c42efb42178b57f4408   # skaters#394
+      SKATERS_SPLICED_NONAFFINE: 0ad69a5ff7cea3bc049b351d9a76d5f4c6be0afb # skaters#392
+      SKATERS_PUSHFORWARD_BASE: f93d1a74cc20d3e59ec2b02c4e92530e5c38d9a4
+      SKATERS_PUSHFORWARD_AFFINE: bec9df0c6c90a41d0be72a1290455721e9c8b770 # skaters#393
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: microprediction/skaters
+          path: skaters-ref
+          fetch-depth: 0
+      - name: Build the reference tree
+        working-directory: skaters-ref
+        run: |
+          git checkout --detach "$SKATERS_CANONICAL_STATE"
+          git -c user.name=ci -c user.email=ci@localhost merge --no-edit "$SKATERS_SPLICED_NONAFFINE"
+          git diff "$SKATERS_PUSHFORWARD_BASE" "$SKATERS_PUSHFORWARD_AFFINE" -- src/skaters/pushforward.py | git apply
+          git log --oneline -1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1'
+      - uses: julia-actions/cache@v2
+      - uses: julia-actions/julia-buildpkg@v1
+      - name: Write Julia checkpoints
+        run: julia --project=. parity/write_julia_checkpoints.jl "$RUNNER_TEMP/julia_checkpoints.json"
+      - name: Resume them in Python
+        env:
+          PYTHONPATH: skaters-ref/src
+        run: python parity/check_julia_checkpoints.py "$RUNNER_TEMP/julia_checkpoints.json"

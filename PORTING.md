@@ -178,7 +178,8 @@ runs the walker checks of the reference's `tests/test_state_json.py`. The
 other direction is a script pair: `parity/write_julia_checkpoints.jl`
 writes Julia checkpoints for every scenario and
 `parity/check_julia_checkpoints.py` resumes them in Python against Python's
-own continuation. The reference's mahalanobis, zbank and gpdtail are not
+own continuation; the `state-in-python` CI job runs the pair on every PR
+against the same reference tree. The reference's mahalanobis, zbank and gpdtail are not
 covered (leaving skaters, skaters#90), nor its conforming_leaf and
 ensemble_leaf, which are outside its public API.
 
