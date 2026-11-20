@@ -142,6 +142,22 @@ let d = spliced(), hit = 0
     check(hit >= 2, "deep tail: only $hit quantiles reached the erfc solve")
 end
 
+# Deep-tail cdf and logpdf (skaters fix/spliced-tail-z). Beyond 1e-8 body
+# mass the splice coordinate z is read from erfc sums, so cdf and logpdf
+# agree with the exact body tail, not the last bits of erf.
+let body = Dist(NTuple{3,Float64}[(0.7, 0.0, 1.0), (0.3, 0.5, 2.0)])
+    d = SplicedDist(body, -2.0, 2.0, 0.03, 0.03, 0.2, 0.6, 0.25, 0.7)
+    for x in (12.0, 13.5)
+        t = sum(w * 0.5 * Skaters.erfc((x - m) / (s * sqrt(2.0))) for (w, m, s) in body.comps)
+        check(approx(Skaters._z(d, x), -Skaters._phi_inv(t); rtol = 1e-12), "deep tail z($x)")
+        t2 = sum(w * 0.5 * Skaters.erfc((x + m) / (s * sqrt(2.0))) for (w, m, s) in body.comps)
+        check(approx(Skaters._z(d, -x), Skaters._phi_inv(t2); rtol = 1e-12), "deep tail z(-$x)")
+    end
+    # monotone in the far tail, where the old 0.5 * (1 + erf) read plateaued
+    cs = [dist_cdf(d, 11.0 + 0.05 * i) for i in 0:59]
+    check(all(cs[i] < cs[i+1] for i in 1:59), "deep-tail cdf is not strictly increasing")
+end
+
 if failures > 0
     error("SPLICED NONAFFINE FAILED: $failures check(s)")
 end
