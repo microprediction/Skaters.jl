@@ -144,3 +144,23 @@ function laplace(; k::Int = 1, objective::String = "crps", sticky::Bool = true,
     f = parade(f, k)
     return f
 end
+
+# laplace for a series that never crosses a known bound. Experimental, an
+# example composition as in the reference. Forecasts log(y - lower) (or
+# -log(upper - y)) with laplace and maps the predictive back by the exact
+# change of variables (log_transform), so the predictive is a
+# PushforwardDist. The returned state is laplace's own; PIT values are
+# invariant under the log map. Missing values pass through to laplace, and a
+# finite observation on or past the bound throws ArgumentError. After Bjorn
+# Flesaker.
+function flesaker(; k::Int = 1, lower::Union{Nothing,Real} = nothing,
+                  upper::Union{Nothing,Real} = nothing, laplace_kwargs...)
+    forward, inverse_k = log_transform(; lower = lower, upper = upper)
+    inner = laplace(; k = k, laplace_kwargs...)
+    function _flesaker(y::Float64, state::Union{Nothing,Dict})
+        yp, _ = forward(y, nothing)
+        dists, state = inner(yp, state)
+        return inverse_k(dists, Dict{String,Any}()), state
+    end
+    return _flesaker
+end

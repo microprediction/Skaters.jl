@@ -64,7 +64,8 @@ or `julia --project=. test/runtests.jl`):
 | dist (mixture, ulp-tolerant prune) | src/skaters/dist.py | DONE |
 | runstats (Welford) | runstats.py | DONE |
 | leaf, scale_mixture_leaf, crps_leaf, garch_leaf | leaf.py | DONE |
-| transforms (diff, frac, standardize, ema, ou, theta, drift, holt, garch, seasonal, power, yeo-johnson, ar, grouped_ar) | transform.py | DONE |
+| transforms (diff, frac, standardize, ema, ou, theta, drift, holt, garch, seasonal_difference, seasonal_anchor, seasonal_scale, power, yeo-johnson, log_transform, ar, grouped_ar, gaussianize; `exact` on power and yeo-johnson) | transform.py | DONE |
+| PushforwardDist (table and analytic maps, moment-matched components) | pushforward.py | DONE |
 | conjugate | conjugate.py | DONE |
 | ema skater | ema.py | DONE |
 | precision-weighted ensemble | ensemble.py | DONE |
@@ -74,7 +75,7 @@ or `julia --project=. test/runtests.jl`):
 | terminal leaf ensemble | terminal.py | DONE |
 | tails (Acklam phi_inv, censored-ML GPD, SplicedDist) | tails.py | DONE |
 | parade (PIT/z state) | parade.py | DONE |
-| laplace (the composition) | api.py | DONE |
+| laplace (the composition), flesaker | api.py | DONE |
 | adaptive search (recipes-only state) | search.py | DONE |
 | spec build path | spec.py | DONE |
 | periodicity detector | periodicity.py | DONE |
@@ -111,7 +112,8 @@ the top-atom selection uses a stable `MergeSort`.
 Float math is IEEE f64 throughout. `erf` and `erfc` come straight from the
 openlibm that Julia's Base math already bundles, reached by `ccall` (no
 extra package). openlibm's `erf` matches CPython's own `m_erf` to about
-1e-16, far inside the 1e-6 gate. The Acklam inverse-normal quantile is
+1e-16, far inside the 1e-6 gate everywhere except extreme quantiles (see
+the transform parity note below). The Acklam inverse-normal quantile is
 ported verbatim from tails.py, including the single Halley polish step.
 
 State is plain nested `Dict{String,Any}` (and plain vectors) so it stays
@@ -131,11 +133,49 @@ multiplier swaps the tails and negates the thresholds. Without them,
 conjugating `laplace()` with standardize, garch, ema_transform,
 ou_transform, seasonal_difference or seasonal_anchor threw a `MethodError`
 once the GPD splice went live. `test/spliced_affine.jl` checks the change
-of variables and runs each wrapper past the splice. The reference test also
-wraps `seasonal_scale`, which this port does not have yet. Branches that
-read `d.comps` directly (ema_transform, seasonal_difference and
-seasonal_anchor at horizons past the first, power_transform, yeo_johnson)
-still expect a plain `Dist`.
+of variables and runs each wrapper past the splice, `seasonal_scale`
+included.
+
+The transform surface matches the reference's `transform.py` and
+`pushforward.py` def for def. `PushforwardDist` (`src/pushforward.jl`)
+takes either a `(ys, zs)` table or the analytic `inv_fn`, `fwd_fn`,
+`log_jacobian_fn`, `component_moments_fn` and `scaled_inv_fn`, with the
+reference's table CRPS and quantile-quadrature CRPS. Python duck-types on a
+`components` attribute; here `_components(d)` plays that part: a `Dist`'s
+own components, a `PushforwardDist`'s moment-matched shim (Gauss-Hermite per
+inner component, or one Gaussian fitted on the 257-point quantile grid),
+and `nothing` for a `SplicedDist`. `dist_combine`, `sticky`, `_widen` and
+the delta-method inverses read it, so stacking (power_transform around
+yeo_johnson around laplace) and combining pushforwards behave as in Python.
+
+Transforms that read components handle `SplicedDist` as in the reference's
+bc67bd8. At horizons past the first, ema_transform, seasonal_difference and
+seasonal_anchor widen the body through `_widen` and rebuild the
+`SplicedDist` with the same thresholds, tail masses and GPD parameters.
+power_transform, yeo_johnson and gaussianize emit the exact pushforward of
+a `SplicedDist` through their inverse map: a table from `table_from_map`
+over the window from `quantile(1e-6)` to `quantile(1 - 1e-6)`, padded by its
+span on each side. Mixture outputs take the old code path unchanged, which
+the parity gate confirms. gaussianize uses CPython's `NormalDist.inv_cdf`
+(Wichura's AS241, ported term for term as `_nd_inv_cdf`), not the Acklam
+quantile the tails use. `log_transform` and `flesaker` throw `ArgumentError`
+where the reference raises `ValueError`.
+
+`test/spliced_nonaffine.jl` mirrors the reference's
+`tests/test_spliced_nonaffine.py`. `test/transform_parity.jl` replays
+`parity/transform_vectors.json`, written by `parity/gen_transform_vectors.py`
+against the reference (run it with `PYTHONPATH` at the reference's `src`).
+It covers seasonal_scale, every gaussianize guard and the smooth mode, the
+exact flags, log_transform with either bound, stacked and combined
+pushforwards, flesaker, and laplace's spliced predictive through every
+component-reading transform. Short-series scenarios hold at 1e-6. The
+spliced ones read extreme quantiles, near p = 1e-12, where a Gaussian
+body's cdf is 0.5(1 + erf(z)) with erf near -1. openlibm's `erf` and the
+one CPython gets from the platform libm differ by one ulp on roughly a
+quarter of arguments, which moves such a quantile by about 1e-6, so the
+same captured `SplicedDist` through every inverse is held at 1e-5 relative
+and the 700-step end-to-end laplace runs at 1e-3. The test header gives the
+details.
 
 ## Refresh ritual
 
@@ -156,6 +196,9 @@ regenerated there, and its `parity/quantile_contract.json`). That commit
 carries the scale-relative `Dist.quantile` and the 2100 default budget,
 mirrored here in `dist_quantile(::Dist)` and forwarded by
 `dist_quantile(::SplicedDist)`.
+`parity/transform_vectors.json` is generated by
+`parity/gen_transform_vectors.py` against the reference at commit
+`f93d1a74cc20d3e59ec2b02c4e92530e5c38d9a4` (branch fix/spliced-nonaffine).
 The robustness and contract suites mirror the R port
 (`skaters-r/tests/robustness.R`, `tests/contract.R`) and the Rust crate
 (`rust/tests/robustness.rs`), which in turn mirror the reference repo's

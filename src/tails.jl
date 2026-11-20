@@ -186,6 +186,12 @@ function dist_scale(d::SplicedDist, factor::Float64)
                        d.g_up, d.s_up, d.g_lo, d.s_lo)
 end
 
+# k>1 widening in ema_transform, seasonal_difference and seasonal_anchor:
+# widen the body and keep the splice (see _widen in transform.jl).
+_widen(d::SplicedDist, delta::Float64, add::Float64) =
+    SplicedDist(_widen(d.body, delta, add), d.t_lo, d.t_up, d.zeta_lo, d.zeta_up,
+                d.g_lo, d.s_lo, d.g_up, d.s_up)
+
 function _z(d::SplicedDist, x::Float64)::Float64
     u = min(max(dist_cdf(d.body, x), _TEPS), 1.0 - _TEPS)
     return _phi_inv(u)
