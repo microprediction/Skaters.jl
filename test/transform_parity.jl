@@ -1,29 +1,17 @@
 # Parity for seasonal_scale, gaussianize, log_transform, the exact flag on
-# power_transform and yeo_johnson, stacked and combined pushforwards,
+# power_transform and yeo_johnson, stacked and combined pushforwards, affine
+# maps of pushforwards (standardize or seasonal_scale around them),
 # flesaker, and laplace's tail-spliced predictive through each
 # component-reading transform. The vectors come from the Python reference
 # (parity/gen_transform_vectors.py writes parity/transform_vectors.json);
 # the probes are those of test/parity.jl.
 #
-# Tolerances. Every short-series scenario holds at 1e-6, as in parity.jl.
-# The rest read a tail-spliced predictive's extreme quantiles: the
-# pushforward table window at quantile(1e-6) and quantile(1 - 1e-6), and the
-# 257-point quantile grid behind the moment shim and the quantile-quadrature
-# CRPS reach p near 1e-12. Out there a Gaussian body's cdf is 0.5(1 + erf(z))
-# with erf near -1, and openlibm's erf differs from the erf CPython gets from
-# the platform libm by one ulp on roughly a quarter of arguments. That moves
-# the body's quantile at p = 1e-12 by about 1e-6, and exponential inverses
-# (yeo_johnson at 0, log_transform) amplify it. So:
+# Every value holds at 1e-6, spliced cases included: since the reference's
+# deep-tail fix (skaters 0ad69a5) a SplicedDist quantile below 1e-8 body tail
+# mass is solved on erfc sums, so the extreme quantiles behind the pushforward
+# table window and the quantile-grid shim agree across ports.
 #
-#   fixed_spliced: the exact SplicedDist the reference captured from laplace,
-#     rebuilt on both sides and pushed through every inverse, at 1e-5 relative.
-#   long-series end-to-end runs of laplace past its splice, at 1e-3: after
-#     500+ steps the two laplace states also differ in their last ulps, and a
-#     window endpoint where the body's cdf is clamped at 1 - 1e-12 and flat
-#     moves by about 1e-4, the table interpolation by about 1e-5.
-#
-# That sensitivity is in the reference's rule, not in the port.
-#
+# Run: julia --project=. test/transform_parity.jl
 using JSON
 using Skaters
 
@@ -38,8 +26,6 @@ const Q_LO = Float64(v["q_lo"])
 const Q_HI = Float64(v["q_hi"])
 const ATOL = 1e-6
 const RTOL = 1e-6
-const FIXED_RTOL = 1e-5
-const LONG_TOL = 1e-3
 
 probe(d) = (dist_mean(d), dist_std(d), dist_logpdf(d, PROBE), dist_cdf(d, PROBE),
             dist_quantile(d, Q_LO), dist_quantile(d, Q_HI), dist_crps(d, PROBE))
@@ -74,6 +60,11 @@ for k in (1, 3)
             conjugate(leaf(k), power_transform(0.5; exact = true), k)]; k = k))
     add("log_lower", conjugate(leaf(k), log_transform(lower = lo), k))
     add("log_upper", conjugate(leaf(k), log_transform(upper = hi), k))
+    add("std_yeojohnson_exact",
+        conjugate(conjugate(leaf(k), yeo_johnson(0.0; exact = true), k), standardize(), k))
+    add("std_log", conjugate(conjugate(leaf(k), log_transform(lower = -10.0), k), standardize(), k))
+    add("sscale_log", conjugate(conjugate(leaf(k), log_transform(lower = -10.0), k),
+                                seasonal_scale(7; center = true), k))
 end
 push!(scenarios, ("laplace_power", conjugate(laplace(k = 1), power_transform(0.5), 1)))
 push!(scenarios, ("laplace_yeojohnson", conjugate(laplace(k = 1), yeo_johnson(0.5), 1)))
@@ -86,6 +77,8 @@ push!(scenarios, ("laplace_sdiff_k3", conjugate(laplace(k = 3), seasonal_differe
 push!(scenarios, ("laplace_sanchor_k3", conjugate(laplace(k = 3), seasonal_anchor(2), 3)))
 push!(scenarios, ("flesaker", flesaker(k = 1, lower = llo)))
 push!(scenarios, ("flesaker_upper_k3", flesaker(k = 3, upper = lhi)))
+push!(scenarios, ("laplace_std_yeojohnson_exact",
+    conjugate(conjugate(laplace(k = 1), yeo_johnson(0.0; exact = true), 1), standardize(0.05), 1)))
 
 expected_all = v["scenarios"]
 length(scenarios) == length(expected_all) ||
@@ -116,8 +109,6 @@ for (name, sk) in scenarios
     spec = expected_all[name]
     is_long = spec["series"] == "long"
     series = is_long ? long : short
-    atol = is_long ? LONG_TOL : ATOL
-    rtol = is_long ? LONG_TOL : RTOL
     rows = Dict(Int(r[1]) => r[2] for r in spec["out"])
     st = nothing
     sc_fails = 0
@@ -127,7 +118,7 @@ for (name, sk) in scenarios
         want_h = rows[i-1]
         length(dists) == length(want_h) || error("$name step $(i-1): horizon count")
         for (h, d) in enumerate(dists)
-            sc_fails += compare!("$name step $(i-1) h$h", probe(d), want_h[h], atol, rtol)
+            sc_fails += compare!("$name step $(i-1) h$h", probe(d), want_h[h], ATOL, RTOL)
         end
     end
     println(sc_fails == 0 ? "ok   " : "FAIL ", name)
@@ -172,10 +163,15 @@ let (g_inv, g_st) = state_after(gaussianize(), short),
             "widen" => Skaters._widen(d, 0.7, 0.3),
             "widen_pushforward" => Skaters._widen(a, 0.7, 0.3),
             "combine" => dist_combine(Any[a, b], [0.3, 0.7]),
+            "affine_power_exact" => dist_affine(b, 2.5, -1.0),
+            "affine_power_exact_neg" => dist_affine(b, -1.7, 0.5),
+            "affine_log_lower_neg" => dist_affine(lg(Any[d], e)[1], -0.3, 4.0),
+            "shift_yeojohnson_log_exact" => dist_shift(yjx(Any[d], e)[1], 1.5),
+            "scale_log_upper" => dist_scale(lgu(Any[d], e)[1], -2.0),
         )
         length(got) == length(c["out"]) || error("fixed_spliced: probe set mismatch")
         for (key, want) in c["out"]
-            nfixed += compare!("fixed_spliced $key", probe(got[key]), want, ATOL, FIXED_RTOL)
+            nfixed += compare!("fixed_spliced $key", probe(got[key]), want, ATOL, RTOL)
         end
     end
     println(nfixed == 0 ? "ok   " : "FAIL ", "fixed_spliced ($(length(v["fixed_spliced"])) captured predictives)")

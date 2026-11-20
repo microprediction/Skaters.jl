@@ -164,3 +164,13 @@ function flesaker(; k::Int = 1, lower::Union{Nothing,Real} = nothing,
     end
     return _flesaker
 end
+
+# The reference's name for adaptive_search (skaters.search.search).
+search(; kwargs...) = adaptive_search(; kwargs...)
+
+# Adaptive-search skater: grow the model space online instead of fixing it.
+# The reference's roster name for search; accepts search's keyword arguments.
+dantzig(; k::Int = 1, kwargs...) = adaptive_search(; k = k, kwargs...)
+
+# A skater is any callable (y, state) -> (dists, state); see conventions.py.
+const Skater = Base.Callable

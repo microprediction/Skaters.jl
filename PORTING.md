@@ -19,9 +19,9 @@ active. It parses the vectors with JSON.jl and compares the seven probes
 (mean, std, logpdf@0.3, cdf@0.3, quantile@0.1, quantile@0.9, crps@0.3) for
 every post-burn-in step and horizon of every scenario.
 
-Current status: 56 scenarios plus the periodicity and covariance blocks,
-105798 probe values, PARITY OK. This is the same value count the R port
-reached, i.e. full library coverage.
+Current status: 75 scenarios plus the periodicity and covariance blocks,
+145978 probe values, PARITY OK. The registry must cover every scenario the
+reference wrote; the gate fails on any it does not.
 
 ## The other three gates
 
@@ -75,9 +75,11 @@ or `julia --project=. test/runtests.jl`):
 | terminal leaf ensemble | terminal.py | DONE |
 | tails (Acklam phi_inv, censored-ML GPD, SplicedDist) | tails.py | DONE |
 | parade (PIT/z state) | parade.py | DONE |
-| laplace (the composition), flesaker | api.py | DONE |
-| adaptive search (recipes-only state) | search.py | DONE |
-| spec build path | spec.py | DONE |
+| laplace (the composition), flesaker, dantzig | api.py | DONE |
+| residual_transform, CorrectedDist, ResidualDiagnostics | residual_transform.py | DONE |
+| homogenize, homogenize_candidates, HomogenizedDist | homogenize.py | DONE |
+| adaptive search (recipes-only state), also as `search` | search.py | DONE |
+| spec system: build, spec_name, to_json, from_json | spec.py | DONE |
 | periodicity detector | periodicity.py | DONE |
 | covariance estimators (running, ema, ledoit_wolf) | cov/ | DONE |
 
@@ -112,8 +114,13 @@ the top-atom selection uses a stable `MergeSort`.
 Float math is IEEE f64 throughout. `erf` and `erfc` come straight from the
 openlibm that Julia's Base math already bundles, reached by `ccall` (no
 extra package). openlibm's `erf` matches CPython's own `m_erf` to about
-1e-16, far inside the 1e-6 gate everywhere except extreme quantiles (see
-the transform parity note below). The Acklam inverse-normal quantile is
+1e-16, far inside the 1e-6 gate. One place used to amplify that last
+bit: a `SplicedDist` quantile in the deep tail bisected the body's
+0.5(1 + erf) cdf at p near 1e-12, where erf's last bit sets a plateau. As
+in the reference (skaters 0ad69a5), below 1e-8 body tail mass the quantile
+is now solved on erfc sums (`_body_tail_quantile` in `src/tails.jl`), which
+keep relative precision, so the answer is fixed by `tol` alone. openlibm's
+`erfc` is fdlibm's, so no extra erfc port is needed. The Acklam inverse-normal quantile is
 ported verbatim from tails.py, including the single Halley polish step.
 
 State is plain nested `Dict{String,Any}` (and plain vectors) so it stays
@@ -161,6 +168,17 @@ the parity gate confirms. gaussianize uses CPython's `NormalDist.inv_cdf`
 quantile the tails use. `log_transform` and `flesaker` throw `ArgumentError`
 where the reference raises `ValueError`.
 
+`dist_affine`, `dist_shift` and `dist_scale` on `PushforwardDist` mirror
+the reference's `PushforwardDist.affine`, `shift` and `scale` (skaters
+branch fix/pushforward-affine): the law of a*Y + b stays a pushforward of
+the same inner, with the table mapped and every analytic piece (inverse,
+forward, log-Jacobian, component moments, scaled inverse) composed. A
+negative multiplier reflects the inner through `dist_scale(inner, -1)` and
+reverses the table so the map stays increasing. This lets standardize,
+seasonal_scale and the other affine transforms wrap an exact yeo_johnson,
+a log_transform or a spliced pushforward. `test/pushforward_affine.jl`
+mirrors `tests/test_pushforward_affine.py`.
+
 `test/spliced_nonaffine.jl` mirrors the reference's
 `tests/test_spliced_nonaffine.py`. `test/transform_parity.jl` replays
 `parity/transform_vectors.json`, written by `parity/gen_transform_vectors.py`
@@ -168,14 +186,40 @@ against the reference (run it with `PYTHONPATH` at the reference's `src`).
 It covers seasonal_scale, every gaussianize guard and the smooth mode, the
 exact flags, log_transform with either bound, stacked and combined
 pushforwards, flesaker, and laplace's spliced predictive through every
-component-reading transform. Short-series scenarios hold at 1e-6. The
-spliced ones read extreme quantiles, near p = 1e-12, where a Gaussian
-body's cdf is 0.5(1 + erf(z)) with erf near -1. openlibm's `erf` and the
-one CPython gets from the platform libm differ by one ulp on roughly a
-quarter of arguments, which moves such a quantile by about 1e-6, so the
-same captured `SplicedDist` through every inverse is held at 1e-5 relative
-and the 700-step end-to-end laplace runs at 1e-3. The test header gives the
-details.
+component-reading transform. Every value holds at 1e-6, the spliced
+cases included, since the deep-tail fix described under Numerics.
+
+Everything in the reference's `__all__` is exported here except
+`mahalanobis` and `zbank`, which are leaving skaters for a separate package
+(skaters#90). `search` and `build` are the reference's names for
+`adaptive_search` and `spec_build`, and both spellings work. `dantzig`
+forwards its keywords to `search`. `Skater` is `Base.Callable`, since a
+skater here is any callable `(y, state) -> (dists, state)`.
+
+`to_json` and `from_json` are the reference's spec serialisation (spec.py),
+not skater state: the reference has no state JSON. `to_json` writes compact
+JSON byte-identical to Python's `json.dumps(spec, separators=(",", ":"))`.
+Julia's `Dict` is unordered, so keys are written in the reference's
+constructor order (op, alpha, d, window, k, skaters, floor, skater,
+transform, then any others sorted), and floats in Python's `repr` spelling
+(`1e-05`, `1.0`) through `_py_float`. `spec_name` now formats with
+Python's `.6g` through the same helper, which fixes names like
+`ema_t(1e-05)` that used to print as `ema_t(1.0e-5)`.
+
+`residual_transform` and `homogenize` port their modules line for line,
+including the bisection standard-normal quantile on a unit Gaussian `Dist`
+(not the Acklam quantile the tails use) and the 32-point quantile grid
+behind `mean`, `std` and `crps` of `CorrectedDist` and `HomogenizedDist`.
+`ResidualDiagnostics` is a mutable struct. The reference's `update` and
+`summary` methods are `Skaters.update!(d, z)` (not exported, the name is too
+generic) and `summary(d)`, which returns the reference's dict.
+`test/wave2_parity.jl` replays `parity/wave2_vectors.json`, written by
+`parity/gen_wave2_vectors.py` against the reference. It covers every
+residual model, homogenize under each coupling and with custom candidates,
+homogenize and residual_transform around laplace (also on 700 steps, with
+the splice live), dantzig and search, the candidate grid, the residual z
+stream and diagnostics, and the spec round trips. All 34941 values hold at
+1e-6.
 
 ## Refresh ritual
 
@@ -189,16 +233,18 @@ This port is faithful to skaters as of the pinned commit. To refresh:
 
 ## Provenance
 
-`parity/vectors.json` and `parity/quantile_contract.json` are copied from
-the reference worktree at commit
-`38ddfa9305d9d9ce43a82951e0c3e18708ee74b6` (its `parity/vectors.json`,
-regenerated there, and its `parity/quantile_contract.json`). That commit
-carries the scale-relative `Dist.quantile` and the 2100 default budget,
-mirrored here in `dist_quantile(::Dist)` and forwarded by
+All parity vectors come from one reference tree: skaters commit
+`0ad69a5ff7cea3bc049b351d9a76d5f4c6be0afb` (branch fix/spliced-nonaffine,
+with the deep-tail spliced quantile fix) plus the `src/skaters/pushforward.py`
+change of `bec9df0c6c90a41d0be72a1290455721e9c8b770` (branch
+fix/pushforward-affine, `PushforwardDist.affine`), applied on top.
+`parity/vectors.json` is that tree's `parity/gen_vectors.py` output, and
+`parity/quantile_contract.json` is unchanged from it.
+`parity/transform_vectors.json` and `parity/wave2_vectors.json` come from
+`parity/gen_transform_vectors.py` and `parity/gen_wave2_vectors.py` run
+against it. The scale-relative `Dist.quantile` and the 2100 default budget
+are mirrored in `dist_quantile(::Dist)` and forwarded by
 `dist_quantile(::SplicedDist)`.
-`parity/transform_vectors.json` is generated by
-`parity/gen_transform_vectors.py` against the reference at commit
-`f93d1a74cc20d3e59ec2b02c4e92530e5c38d9a4` (branch fix/spliced-nonaffine).
 The robustness and contract suites mirror the R port
 (`skaters-r/tests/robustness.R`, `tests/contract.R`) and the Rust crate
 (`rust/tests/robustness.rs`), which in turn mirror the reference repo's

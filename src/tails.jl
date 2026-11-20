@@ -47,6 +47,66 @@ function _phi_inv(p::Float64)::Float64
     return x - u / (1.0 + 0.5 * x * u)
 end
 
+# Below this tail mass the body quantile is solved on erfc sums. dist_cdf is
+# 0.5 * (1 + erf), whose resolution (about 5.5e-17) is a sizable fraction of
+# a 1e-12 tail: bisection on it stops on a plateau whose position turns on the
+# last bit of erf, which differs between libm builds and between the ports
+# (about 1.8e-6 in x at the 1e-12 PIT clamp). The erfc sum keeps relative
+# precision, so the answer is fixed by tol alone. Above 1e-8 the plateau is
+# already below tol and the plain Dist quantile is kept (skaters 0ad69a5).
+const _TAIL_U = 1e-8
+
+# x with body mass t beyond it (below x, or above x when upper).
+function _body_tail_quantile(body::Dist, t::Float64, upper::Bool, tol::Float64, max_iter::Int)::Float64
+    sign = upper ? -1.0 : 1.0           # mirror the upper tail onto the lower
+    comps = NTuple{3,Float64}[(w, sign * m, s) for (w, m, s) in body.comps]
+    function mass(x)
+        total = 0.0
+        for (w, m, s) in comps
+            if s > 0.0
+                total += w * 0.5 * erfc((m - x) / (s * SQRT2))
+            elseif x >= m
+                total += w
+            end
+        end
+        return total
+    end
+    mu = sign * dist_mean(body)
+    sigma = sqrt(dist_var(body))
+    scale = Inf
+    for (w, _, s) in comps
+        if w > 0 && s > 0 && s < scale
+            scale = s
+        end
+    end
+    scale == Inf && (scale = 1.0)
+    x_tol = tol * min(1.0, scale)
+    seed = max(8.0 * sigma, 1e-12 * max(1.0, abs(mu)))
+    lo, hi, width = mu - seed, mu, seed
+    for _ in 1:120
+        mass(hi) >= t && break
+        hi += width
+        width *= 2.0
+    end
+    width = seed
+    for _ in 1:120
+        mass(lo) < t && break
+        lo -= width
+        width *= 2.0
+    end
+    for _ in 1:max_iter
+        hi - lo < x_tol && break
+        mid = 0.5 * (lo + hi)
+        (lo < mid < hi) || break
+        if mass(mid) < t
+            lo = mid
+        else
+            hi = mid
+        end
+    end
+    return sign * (0.5 * (lo + hi))
+end
+
 # --- GPD helpers ---
 
 function _gpd_logpdf(e::Float64, gamma::Float64, sigma::Float64)::Float64
@@ -238,6 +298,10 @@ function dist_quantile(d::SplicedDist, p::Float64; tol::Float64 = 1e-9, max_iter
     else
         u = d._plo + (p - d.zeta_lo) / d._c
         z = _phi_inv(min(max(u, _TEPS), 1.0 - _TEPS))
+    end
+    t = max(_phi_t(-abs(z)), _TEPS)    # body tail mass beyond the target
+    if t < _TAIL_U
+        return _body_tail_quantile(d.body, t, z > 0.0, tol, max_iter)
     end
     ub = min(max(_phi_t(z), _TEPS), 1.0 - _TEPS)
     return dist_quantile(d.body, ub; tol = tol, max_iter = max_iter)

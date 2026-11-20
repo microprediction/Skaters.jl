@@ -234,6 +234,47 @@ function _pf_crps_from_quantiles(d::PushforwardDist, x::Float64)::Float64
     return total
 end
 
+# --- affine maps ---
+
+# The law of a*Y + b, still a pushforward of (a reflection of) the same inner.
+# a > 0 composes the map; a < 0 reflects the inner with dist_scale(inner, -1)
+# so the composed map stays increasing. Port of PushforwardDist.affine.
+function dist_affine(d::PushforwardDist, a::Float64, b::Float64)
+    (a == 0.0 || !isfinite(a) || !isfinite(b)) &&
+        throw(ArgumentError("affine needs a finite nonzero a and a finite b"))
+    r = a > 0 ? 1.0 : -1.0                 # z' = r * z
+    inner = r > 0 ? d.inner : dist_scale(d.inner, -1.0)
+    inv, fwd, lj = d.inv_fn, d.fwd_fn, d.log_jacobian_fn
+    cmf, sinv = d.component_moments_fn, d.scaled_inv_fn
+    log_a = log(abs(a))
+    ys = zs = nothing
+    if d.ys !== nothing
+        ys = Float64[a * y + b for y in d.ys]
+        zs = Float64[r * z for z in d.zs]
+        if r < 0
+            reverse!(ys)
+            reverse!(zs)
+        end
+    end
+    return PushforwardDist(inner, ys, zs;
+        inv_fn = inv === nothing ? nothing : (z -> a * inv(r * z) + b),
+        fwd_fn = fwd === nothing ? nothing : (y -> r * fwd((y - b) / a)),
+        log_jacobian_fn = lj === nothing ? nothing : (z -> lj(r * z) - log_a),
+        component_moments_fn = cmf === nothing ? nothing :
+            ((m, s) -> begin
+                mu, sd = cmf(r * m, s)
+                (a * mu + b, abs(a) * sd)
+            end),
+        scaled_inv_fn = sinv === nothing ? nothing : ((z, w) -> a * sinv(r * z, w) + w * b))
+end
+
+dist_shift(d::PushforwardDist, delta::Float64) = dist_affine(d, 1.0, delta)
+
+function dist_scale(d::PushforwardDist, factor::Float64)
+    factor == 0 && throw(ArgumentError("scale factor must be nonzero"))
+    return dist_affine(d, factor, 0.0)
+end
+
 # --- Dist-compatibility shim ---
 
 # Moment-matched mixture components in y-space (lazy, cached). For a spliced
