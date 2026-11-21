@@ -19,18 +19,16 @@ jobs:
 
   # Julia-written checkpoints must resume in the Python reference
   # (parity/write_julia_checkpoints.jl, then parity/check_julia_checkpoints.py).
-  # The reference is rebuilt exactly as parity/state_vectors.json was made:
-  # skaters feat/canonical-state with fix/spliced-nonaffine merged in and
-  # fix/pushforward-affine's pushforward.py applied.
-  # TODO: once skaters#392, #393 and #394 merge, check out the skaters main
-  # commit that carries all three instead of rebuilding the tree here.
+  # The reference is rebuilt exactly as the parity vectors were made:
+  # skaters feat/canonical-state (skaters#394, which already merges main and
+  # so #392 and #393) with fix/spliced-tail-z's tails.py applied (skaters#398).
+  # TODO: once skaters#394 and #398 merge, check out the skaters main commit
+  # that carries both instead of rebuilding the tree here.
   state-in-python:
     runs-on: ubuntu-latest
     env:
-      SKATERS_CANONICAL_STATE: 080668ba31a0163827800c42efb42178b57f4408   # skaters#394
-      SKATERS_SPLICED_NONAFFINE: 0ad69a5ff7cea3bc049b351d9a76d5f4c6be0afb # skaters#392
-      SKATERS_PUSHFORWARD_BASE: f93d1a74cc20d3e59ec2b02c4e92530e5c38d9a4
-      SKATERS_PUSHFORWARD_AFFINE: bec9df0c6c90a41d0be72a1290455721e9c8b770 # skaters#393
+      SKATERS_CANONICAL_STATE: cdab5cad450026910752c025f19c7eadc75a6125   # skaters#394
+      SKATERS_TAIL_Z: e00e03823df776201c6782fb47012373fda8c3f7            # skaters#398
     steps:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
@@ -42,8 +40,7 @@ jobs:
         working-directory: skaters-ref
         run: |
           git checkout --detach "$SKATERS_CANONICAL_STATE"
-          git -c user.name=ci -c user.email=ci@localhost merge --no-edit "$SKATERS_SPLICED_NONAFFINE"
-          git diff "$SKATERS_PUSHFORWARD_BASE" "$SKATERS_PUSHFORWARD_AFFINE" -- src/skaters/pushforward.py | git apply
+          git diff "$SKATERS_TAIL_Z^" "$SKATERS_TAIL_Z" -- src/skaters/tails.py | git apply
           git log --oneline -1
       - uses: actions/setup-python@v5
         with:

@@ -56,6 +56,20 @@ end
 # already below tol and the plain Dist quantile is kept (skaters 0ad69a5).
 const _TAIL_U = 1e-8
 
+# Body mass below x, or above x when upper, from erfc sums.
+function _body_tail_mass(body::Dist, x::Float64, upper::Bool)::Float64
+    sign = upper ? -1.0 : 1.0
+    total = 0.0
+    for (w, m, s) in body.comps
+        if s > 0.0
+            total += w * 0.5 * erfc(sign * (m - x) / (s * SQRT2))
+        elseif sign * (x - m) >= 0.0
+            total += w
+        end
+    end
+    return total
+end
+
 # x with body mass t beyond it (below x, or above x when upper).
 function _body_tail_quantile(body::Dist, t::Float64, upper::Bool, tol::Float64, max_iter::Int)::Float64
     sign = upper ? -1.0 : 1.0           # mirror the upper tail onto the lower
@@ -253,8 +267,17 @@ _widen(d::SplicedDist, delta::Float64, add::Float64) =
                 d.g_lo, d.s_lo, d.g_up, d.s_up)
 
 function _z(d::SplicedDist, x::Float64)::Float64
-    u = min(max(dist_cdf(d.body, x), _TEPS), 1.0 - _TEPS)
-    return _phi_inv(u)
+    u = dist_cdf(d.body, x)
+    if min(u, 1.0 - u) < _TAIL_U
+        # deep tail: read the smaller tail mass from erfc sums, which keep
+        # relative precision where 0.5 * (1 + erf) is down to its last bits
+        # (skaters fix/spliced-tail-z)
+        upper = u > 0.5
+        t = _body_tail_mass(d.body, x, upper)
+        z = _phi_inv(min(max(t, _TEPS), 0.5))
+        return upper ? -z : z
+    end
+    return _phi_inv(min(max(u, _TEPS), 1.0 - _TEPS))
 end
 
 function dist_cdf(d::SplicedDist, x::Float64)::Float64
