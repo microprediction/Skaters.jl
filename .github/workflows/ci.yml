@@ -19,16 +19,12 @@ jobs:
 
   # Julia-written checkpoints must resume in the Python reference
   # (parity/write_julia_checkpoints.jl, then parity/check_julia_checkpoints.py).
-  # The reference is rebuilt exactly as the parity vectors were made:
-  # skaters feat/canonical-state (skaters#394, which already merges main and
-  # so #392 and #393) with fix/spliced-tail-z's tails.py applied (skaters#398).
-  # TODO: once skaters#394 and #398 merge, check out the skaters main commit
-  # that carries both instead of rebuilding the tree here.
+  # The reference is the skaters main commit that merged skaters#398,
+  # which carries the canonical state layout (#394) and the deep-tail fix.
   state-in-python:
     runs-on: ubuntu-latest
     env:
-      SKATERS_CANONICAL_STATE: cdab5cad450026910752c025f19c7eadc75a6125   # skaters#394
-      SKATERS_TAIL_Z: e00e03823df776201c6782fb47012373fda8c3f7            # skaters#398
+      SKATERS_REF: 3b9f5a789a2ebff4591570ea8cb2fc0f961e8bc9   # skaters main, merge of #398
     steps:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
@@ -36,11 +32,10 @@ jobs:
           repository: microprediction/skaters
           path: skaters-ref
           fetch-depth: 0
-      - name: Build the reference tree
+      - name: Check out the reference
         working-directory: skaters-ref
         run: |
-          git checkout --detach "$SKATERS_CANONICAL_STATE"
-          git diff "$SKATERS_TAIL_Z^" "$SKATERS_TAIL_Z" -- src/skaters/tails.py | git apply
+          git checkout --detach "$SKATERS_REF"
           git log --oneline -1
       - uses: actions/setup-python@v5
         with:
